@@ -7,11 +7,11 @@
 #include <time.h>
 
 #define MAX_DIRS 10000
-#define MAX_PATH 4096
+#define MY_MAX_PATH 4096
 
 // struct to store directory information 
 typedef struct {
-    char path[MAX_PATH];
+    char path[MY_MAX_PATH];
     uint64_t size;
 } DirInfo;
 
@@ -30,7 +30,7 @@ uint64_t scan_directory(const char *path) {
     struct dirent *entry; 
     struct stat st; 
     uint64_t total_size = 0; 
-    char fullpath[MAX_PATH];
+    char fullpath[MY_MAX_PATH];
 
     dir = opendir(path);
     if(!dir) {
@@ -38,12 +38,17 @@ uint64_t scan_directory(const char *path) {
         return 0; 
     }
     while((entry = readdir(dir)) != NULL){
-    
+        
+         if (file_count % 1000 == 0) {
+        printf("\rScanning... %d files found", file_count);
+        fflush(stdout);
+        }
+
         // ignore . and ..
         if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) { continue; }
 
         // build full path 
-        snprintf(fullpath, MAX_PATH, "%s/%s", path, entry->d_name);
+        snprintf(fullpath, MY_MAX_PATH, "%s/%s", path, entry->d_name);
 
         if(stat(fullpath, &st) == 0){
             if(S_ISDIR(st.st_mode)) {
@@ -54,7 +59,7 @@ uint64_t scan_directory(const char *path) {
         
                 // stores subdir info 
                 if (dir_count < MAX_DIRS) {
-                    strncpy(dirs[dir_count].path, fullpath, MAX_PATH);
+                    strncpy(dirs[dir_count].path, fullpath, MY_MAX_PATH);
                     dirs[dir_count].size = subdir_size; 
                     dir_count++;
                 } 
@@ -65,6 +70,7 @@ uint64_t scan_directory(const char *path) {
             }
         } 
     }
+    
     closedir(dir);
     return total_size; 
 }

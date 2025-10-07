@@ -1,0 +1,23 @@
+
+# binaries
+*.o
+*.out
+diskscout
+DiskScout
+
+# Build
+build/
+dist/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+*.dSYM/

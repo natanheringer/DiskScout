@@ -5,6 +5,12 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <windows.h>
+#ifndef FIND_FIRST_EX_LARGE_FETCH
+#define FIND_FIRST_EX_LARGE_FETCH 0
+#endif
+#endif
 #include <pthread.h>
 #include "scanner.h"
 
@@ -37,6 +43,93 @@ int should_skip(const char *name) {
     return 0; // do not skip
 }
 
+#ifdef _WIN32
+// Windows-native fast scanner using FindFirstFileExW (UTF-16) with UTF-8 API surface
+static uint64_t scan_directory_win(
+    const char *path,
+    DirInfo *dirs,
+    int *dir_count,
+    int *file_count,
+    pthread_mutex_t *mutex
+) {
+    wchar_t wpath[MAX_PATH_LEN];
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH_LEN);
+    if (wlen <= 0) return 0;
+
+    wchar_t pattern[MAX_PATH_LEN];
+    _snwprintf(pattern, MAX_PATH_LEN, L"%ls\\*", wpath);
+
+    WIN32_FIND_DATAW ffd;
+    HANDLE hFind = FindFirstFileExW(
+        pattern,
+        FindExInfoBasic,
+        &ffd,
+        FindExSearchNameMatch,
+        NULL,
+        FIND_FIRST_EX_LARGE_FETCH
+    );
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    uint64_t total_size = 0;
+
+    do {
+        const wchar_t *nameW = ffd.cFileName;
+        // skip . and ..
+        if (nameW[0] == L'.' && (nameW[1] == L'\0' || (nameW[1] == L'.' && nameW[2] == L'\0'))) {
+            continue;
+        }
+
+        // Convert name to UTF-8 for filtering and path building
+        char nameUtf8[512];
+        WideCharToMultiByte(CP_UTF8, 0, nameW, -1, nameUtf8, (int)sizeof(nameUtf8), NULL, NULL);
+
+        // skip via fast assembly filter
+        if (fast_should_skip(nameUtf8)) {
+            continue;
+        }
+
+        // Build child wide path and UTF-8 path
+        wchar_t childW[MAX_PATH_LEN];
+        _snwprintf(childW, MAX_PATH_LEN, L"%ls\\%ls", wpath, nameW);
+
+        char childUtf8[MAX_PATH_LEN];
+        WideCharToMultiByte(CP_UTF8, 0, childW, -1, childUtf8, MAX_PATH_LEN, NULL, NULL);
+
+        if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            // Recurse into directory
+            uint64_t dir_sz = scan_directory_win(childUtf8, dirs, dir_count, file_count, mutex);
+            total_size += dir_sz;
+        } else {
+            ULARGE_INTEGER sz; sz.LowPart = ffd.nFileSizeLow; sz.HighPart = ffd.nFileSizeHigh;
+            total_size += sz.QuadPart;
+
+            atomic_inc_file_count(file_count);
+            if (*file_count % 1000 == 0) {
+                printf("\rScanning... %d files found", *file_count);
+                fflush(stdout);
+            }
+        }
+    } while (FindNextFileW(hFind, &ffd));
+
+    FindClose(hFind);
+
+    // Store current directory result
+    if (dirs && dir_count) {
+        pthread_mutex_lock(mutex);
+        if (*dir_count < MAX_DIRS) {
+            strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
+            dirs[*dir_count].size = total_size;
+            (*dir_count)++;
+        }
+        pthread_mutex_unlock(mutex);
+    }
+
+    return total_size;
+}
+#endif
+
 // main scanning function (thread safe)
 uint64_t scan_directory(
     const char *path,
@@ -45,6 +138,9 @@ uint64_t scan_directory(
     int *file_count,
     pthread_mutex_t *mutex
 ) {
+#ifdef _WIN32
+    return scan_directory_win(path, dirs, dir_count, file_count, mutex);
+#else
     DIR *dir;
     struct dirent *entry; 
     struct stat st; 
@@ -108,6 +204,7 @@ uint64_t scan_directory(
     }
     
     return total_size;
+#endif
 } 
 
 // worker thread

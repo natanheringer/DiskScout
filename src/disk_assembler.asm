@@ -5,6 +5,9 @@ section .text
     global fast_strcmp_dotdot
     global atomic_inc_file_count
     global fast_should_skip
+    global fast_wstrcmp_dot
+    global fast_wstrcmp_dotdot
+    global fast_wshould_skip
     global fast_path_copy
 
 ; void quick_add(uint64_t *total, uint64_t value)
@@ -59,6 +62,42 @@ fast_strcmp_dotdot:
 
 not_dotdot: 
     mov rax, 0                      ; return 0 (not equal)
+    ret
+
+; ========================= Wide-char helpers (UTF-16) =========================
+; int fast_wstrcmp_dot(const wchar_t *str)
+; rcx = wide string pointer
+; Returns rax=1 if equals L".", else 0
+fast_wstrcmp_dot:
+    movzx eax, word [rcx]            ; first wide char
+    cmp ax, 0x002E                   ; '.'
+    jne .w_not
+    movzx eax, word [rcx+2]
+    test ax, ax
+    jne .w_not
+    mov rax, 1
+    ret
+.w_not:
+    xor rax, rax
+    ret
+
+; int fast_wstrcmp_dotdot(const wchar_t *str)
+; rcx = wide string pointer
+; Returns rax=1 if equals L"..", else 0
+fast_wstrcmp_dotdot:
+    movzx eax, word [rcx]
+    cmp ax, 0x002E                   ; '.'
+    jne .ww_not
+    movzx eax, word [rcx+2]
+    cmp ax, 0x002E                   ; '.'
+    jne .ww_not
+    movzx eax, word [rcx+4]
+    test ax, ax                      ; terminator
+    jne .ww_not
+    mov rax, 1
+    ret
+.ww_not:
+    xor rax, rax
     ret
 
 ; void atomic_inc_file_count(int *file_count)
@@ -180,3 +219,82 @@ git_str: db ".git", 0
 svn_str: db ".svn", 0
 cache_str: db ".cache", 0
 pycache_str: db "__pycache__", 0
+
+; ======================= Wide-char skiplist (UTF-16) ==========================
+; int fast_wshould_skip(const wchar_t *name)
+; rcx = wide string pointer
+; returns rax=1 to skip, 0 otherwise
+fast_wshould_skip:
+    push rsi
+    sub  rsp, 40h
+    ; L"node_modules"
+    mov  rdx, rcx
+    lea  rsi, [rel w_node_modules]
+    call wstrcmp_impl
+    test rax, rax
+    je   .w_skip
+    ; L".git"
+    mov  rdx, rcx
+    lea  rsi, [rel w_git]
+    call wstrcmp_impl
+    test rax, rax
+    je   .w_skip
+    ; L".svn"
+    mov  rdx, rcx
+    lea  rsi, [rel w_svn]
+    call wstrcmp_impl
+    test rax, rax
+    je   .w_skip
+    ; L".cache"
+    mov  rdx, rcx
+    lea  rsi, [rel w_cache]
+    call wstrcmp_impl
+    test rax, rax
+    je   .w_skip
+    ; L"__pycache__"
+    mov  rdx, rcx
+    lea  rsi, [rel w_pycache]
+    call wstrcmp_impl
+    test rax, rax
+    je   .w_skip
+    add  rsp, 40h
+    pop  rsi
+    xor  rax, rax
+    ret
+.w_skip:
+    add  rsp, 40h
+    pop  rsi
+    mov  rax, 1
+    ret
+
+; wide strcmp: returns rax=0 if equal, 1 if not equal
+wstrcmp_impl:
+    push rbx
+    sub  rsp, 20h
+.wloop:
+    movzx eax, word [rdx]
+    movzx ebx, word [rsi]
+    cmp  ax, bx
+    jne  .wne
+    test ax, ax
+    jz   .weq
+    add  rdx, 2
+    add  rsi, 2
+    jmp  .wloop
+.weq:
+    add  rsp, 20h
+    pop  rbx
+    xor  rax, rax
+    ret
+.wne:
+    add  rsp, 20h
+    pop  rbx
+    mov  rax, 1
+    ret
+
+; UTF-16 string literals (dw: 16-bit code units)
+w_node_modules: dw 'n','o','d','e','_','m','o','d','u','l','e','s',0
+w_git:          dw '.', 'g','i','t',0
+w_svn:          dw '.', 's','v','n',0
+w_cache:        dw '.', 'c','a','c','h','e',0
+w_pycache:      dw '_','_','p','y','c','a','c','h','e','_','_',0

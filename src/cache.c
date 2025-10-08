@@ -153,21 +153,39 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
     char cache_file_path[1024];
     get_cache_file_path(scan_path, cache_file_path, sizeof(cache_file_path));
     
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(cache_file_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return -1;
+    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) { CloseHandle(hFile); return -1; }
+    void *view = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    if (!view) { CloseHandle(hMap); CloseHandle(hFile); return -1; }
+    const unsigned char *p = (const unsigned char *)view;
+    const unsigned char *end = p + GetFileSize(hFile, NULL);
+    if ((size_t)(end - p) < sizeof(CacheHeader)) { UnmapViewOfFile(view); CloseHandle(hMap); CloseHandle(hFile); return -1; }
+    const CacheHeader *headerp = (const CacheHeader *)p; p += sizeof(CacheHeader);
+    CacheHeader header = *headerp;
+#else
     FILE* file = fopen(cache_file_path, "rb");
     if (!file) {
         return -1;
     }
-    
-    // Read cache header
     CacheHeader header;
     if (fread(&header, sizeof(CacheHeader), 1, file) != 1) {
         fclose(file);
         return -1;
     }
+#endif
     
     // Validate cache header
     if (header.magic != CACHE_MAGIC || header.version != CACHE_VERSION) {
+#ifdef _WIN32
+        UnmapViewOfFile(view);
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+#else
         fclose(file);
+#endif
         return -1;
     }
     
@@ -178,9 +196,15 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
     
     for (uint32_t i = 0; i < header.entry_count && *dir_count < MAX_DIRS; i++) {
         CacheEntry entry;
+#ifdef _WIN32
+        if ((size_t)(end - p) < sizeof(CacheEntry)) break;
+        memcpy(&entry, p, sizeof(CacheEntry));
+        p += sizeof(CacheEntry);
+#else
         if (fread(&entry, sizeof(CacheEntry), 1, file) != 1) {
             break;
         }
+#endif
         
         // Validate checksum
         uint32_t expected_checksum = cache_calculate_checksum(entry.path, entry.mtime);
@@ -197,7 +221,13 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
         *file_count += entry.file_count;
     }
     
+#ifdef _WIN32
+    UnmapViewOfFile(view);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+#else
     fclose(file);
+#endif
     return 1; // Cache loaded successfully
 }
 
@@ -210,10 +240,15 @@ int cache_save(const char* scan_path, const DirInfo* dirs, int dir_count, uint64
     char cache_file_path[1024];
     get_cache_file_path(scan_path, cache_file_path, sizeof(cache_file_path));
     
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(cache_file_path, GENERIC_WRITE|GENERIC_READ, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return -1;
+#else
     FILE* file = fopen(cache_file_path, "wb");
     if (!file) {
         return -1;
     }
+#endif
     
     // Get scan path modification time
     struct stat scan_stat;
@@ -231,10 +266,21 @@ int cache_save(const char* scan_path, const DirInfo* dirs, int dir_count, uint64
         .last_updated = time(NULL)
     };
     
+#ifdef _WIN32
+    DWORD totalSize = sizeof(CacheHeader) + (DWORD)(dir_count * sizeof(CacheEntry));
+    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, totalSize, NULL);
+    if (!hMap) { CloseHandle(hFile); return -1; }
+    void *view = MapViewOfFile(hMap, FILE_MAP_WRITE, 0, 0, totalSize);
+    if (!view) { CloseHandle(hMap); CloseHandle(hFile); return -1; }
+    unsigned char *p = (unsigned char *)view;
+    memcpy(p, &header, sizeof(CacheHeader));
+    p += sizeof(CacheHeader);
+#else
     if (fwrite(&header, sizeof(CacheHeader), 1, file) != 1) {
         fclose(file);
         return -1;
     }
+#endif
     
     // Write cache entries
     for (int i = 0; i < dir_count; i++) {
@@ -249,14 +295,26 @@ int cache_save(const char* scan_path, const DirInfo* dirs, int dir_count, uint64
         strncpy(entry.path, dirs[i].path, MAX_PATH_LEN);
         entry.path[MAX_PATH_LEN - 1] = '\0';
         
+    #ifdef _WIN32
+        memcpy(p, &entry, sizeof(CacheEntry));
+        p += sizeof(CacheEntry);
+    #else
         if (fwrite(&entry, sizeof(CacheEntry), 1, file) != 1) {
             fclose(file);
             return -1;
         }
+    #endif
     }
     
+#ifdef _WIN32
+    UnmapViewOfFile(view);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+    return 0;
+#else
     fclose(file);
     return 0;
+#endif
 }
 
 // Invalidate cache for given path

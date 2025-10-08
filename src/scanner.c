@@ -12,6 +12,9 @@
 #endif
 #endif
 #include <pthread.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "scanner.h"
 
 // Assembly function declarations
@@ -19,6 +22,9 @@ extern int fast_strcmp_dot(const char *str);
 extern int fast_strcmp_dotdot(const char *str);
 extern void atomic_inc_file_count(int *file_count);
 extern int fast_should_skip(const char *name);
+extern int fast_wstrcmp_dot(const wchar_t *wstr);
+extern int fast_wstrcmp_dotdot(const wchar_t *wstr);
+extern int fast_wshould_skip(const wchar_t *wname);
 
 // external assembly functions
 extern void quick_add(uint64_t *total, uint64_t value);
@@ -76,21 +82,17 @@ static uint64_t scan_directory_win(
 
     do {
         const wchar_t *nameW = ffd.cFileName;
-        // skip . and ..
-        if (nameW[0] == L'.' && (nameW[1] == L'\0' || (nameW[1] == L'.' && nameW[2] == L'\0'))) {
+        // skip . and .. using wide-char fast helpers
+        if (fast_wstrcmp_dot(nameW) || fast_wstrcmp_dotdot(nameW)) {
             continue;
         }
 
-        // Convert name to UTF-8 for filtering and path building
-        char nameUtf8[512];
-        WideCharToMultiByte(CP_UTF8, 0, nameW, -1, nameUtf8, (int)sizeof(nameUtf8), NULL, NULL);
-
-        // skip via fast assembly filter
-        if (fast_should_skip(nameUtf8)) {
+        // skip via wide-char fast assembly filter (no UTF-8 conversion needed)
+        if (fast_wshould_skip(nameW)) {
             continue;
         }
 
-        // Build child wide path and UTF-8 path
+        // Build child wide path and UTF-8 path only once
         wchar_t childW[MAX_PATH_LEN];
         _snwprintf(childW, MAX_PATH_LEN, L"%ls\\%ls", wpath, nameW);
 

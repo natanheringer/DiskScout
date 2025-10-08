@@ -5,7 +5,7 @@
 #include <pthread.h>
 
 #define MAX_PATH_LEN 4096
-#define MAX_DIRS 200000
+#define MAX_DIRS 300000
 #define MAX_THREADS 8
 
 // Struct to store directory information 
@@ -45,5 +45,6 @@ void* scan_thread_worker(void *arg);
 
 // Merge thread results into global arrays
 void merge_thread_results(ThreadTask *tasks, int num_threads, DirInfo *global_dirs, int *global_dir_count);
+
 
 #endif

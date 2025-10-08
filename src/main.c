@@ -5,79 +5,22 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include <time.h>
+#include <pthread.h>
+#include "scanner.h"
 
-#define MAX_DIRS 10000
-#define MY_MAX_PATH 4096
-
-// struct to store directory information 
-typedef struct {
-    char path[MY_MAX_PATH];
-    uint64_t size;
-} DirInfo;
-
-// Assembly functions {these are gonna be implemented into disk_diver.asm}
+// external assembly function for fast addition
 extern void quick_add(uint64_t *total, uint64_t value);
-extern int compare_sizes(const void *e, const void *b);
+// Assembly external function
+extern int compare_sizes(const void *a, const void *b);
 
-// global array directories 
+// Global arrays
 DirInfo dirs[MAX_DIRS];
-int dir_count = 0; 
-int file_count = 0; 
+int dir_count = 0;
+int file_count = 0;
 
-// Recursively scans directories 
-uint64_t scan_directory(const char *path) {
-    DIR *dir; 
-    struct dirent *entry; 
-    struct stat st; 
-    uint64_t total_size = 0; 
-    char fullpath[MY_MAX_PATH];
-
-    dir = opendir(path);
-    if(!dir) {
-        perror("opendir");
-        return 0; 
-    }
-    while((entry = readdir(dir)) != NULL){
-        
-         if (file_count % 1000 == 0) {
-        printf("\rScanning... %d files found", file_count);
-        fflush(stdout);
-        }
-
-        // ignore . and ..
-        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) { continue; }
-
-        // build full path 
-        snprintf(fullpath, MY_MAX_PATH, "%s/%s", path, entry->d_name);
-
-        if(stat(fullpath, &st) == 0){
-            if(S_ISDIR(st.st_mode)) {
-            // Is directory: recursively scan 
-            uint64_t subdir_size = scan_directory(fullpath);
-            quick_add(&total_size, subdir_size);
-        
-        
-                // stores subdir info 
-                if (dir_count < MAX_DIRS) {
-                    strncpy(dirs[dir_count].path, fullpath, MY_MAX_PATH);
-                    dirs[dir_count].size = subdir_size; 
-                    dir_count++;
-                } 
-            } else if (S_ISREG(st.st_mode)) {
-                // Is regular file: sum size 
-                quick_add(&total_size, st.st_size);
-                file_count++;
-            }
-        } 
-    }
-    
-    closedir(dir);
-    return total_size; 
-}
-
-// byte size format for human readability
+// Formats byte size for human readability
 void format_size(uint64_t bytes, char *output) {
-    if(bytes >= 1099511627776ULL) {
+    if (bytes >= 1099511627776ULL) {
         sprintf(output, "%.2f TB", bytes / 1099511627776.0);
     } else if (bytes >= 1073741824) {
         sprintf(output, "%.2f GB", bytes / 1073741824.0);
@@ -90,50 +33,222 @@ void format_size(uint64_t bytes, char *output) {
     }
 }
 
+// Helper: treat both separators on Windows
+static int is_path_separator(char c) {
+    return c == '/' || c == '\\';
+}
+
+// Returns 1 if `child` is inside `parent` (or equal)
+static int is_subpath(const char *parent, const char *child) {
+    size_t parent_len = strlen(parent);
+    if (strncmp(parent, child, parent_len) != 0) return 0;
+    // Exact match or boundary by a separator
+    char next = child[parent_len];
+    return next == '\0' || is_path_separator(next);
+}
+
+// Abbreviate very long paths with a centered ellipsis to fit a column
+static void abbreviate_path(const char *input, char *output, size_t max_len) {
+    size_t len = strlen(input);
+    if (max_len == 0) return;
+    if (len <= max_len) {
+        // Copy and ensure termination
+        strncpy(output, input, max_len);
+        output[max_len - 1] = '\0';
+        return;
+    }
+    // Reserve 3 chars for "..."
+    if (max_len <= 3) {
+        // Fallback, just dots
+        memset(output, '.', max_len);
+        if (max_len > 0) output[max_len - 1] = '\0';
+        return;
+    }
+    size_t head = (max_len - 3) / 2;
+    size_t tail = (max_len - 3) - head;
+    // Copy head
+    strncpy(output, input, head);
+    // Ellipsis
+    output[head] = '.'; output[head + 1] = '.'; output[head + 2] = '.';
+    // Copy tail
+    strncpy(output + head + 3, input + (len - tail), tail);
+    // Ensure termination
+    output[max_len - 1] = '\0';
+}
+
+// Scans and returns main subdirectories
+int get_subdirs(const char *path, char subdirs[][MAX_PATH_LEN]) {
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
+    
+    int count = 0;
+    struct dirent *entry;
+    struct stat st;
+    char fullpath[MAX_PATH_LEN];
+    
+    while ((entry = readdir(dir)) != NULL && count < MAX_THREADS) {
+        // Ignore . and ..
+        if (strcmp(entry->d_name, ".") == 0 || 
+            strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        
+        // Build full path
+        snprintf(fullpath, MAX_PATH_LEN, "%s/%s", path, entry->d_name);
+        
+        if (stat(fullpath, &st) == 0 && S_ISDIR(st.st_mode)) {
+            strncpy(subdirs[count], fullpath, MAX_PATH_LEN);
+            count++;
+        }
+    }
+    
+    closedir(dir);
+    return count;
+}
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         printf("\nUsage: %s <path>\n", argv[0]);
+        printf("Example: %s /home/user\n", argv[0]);
         return 1;
     }
     
-    printf("DiskScout v1.0 - Scanning %s\n", argv[1]);
+    printf("DiskScout v2.0 (Multi-threaded) - Scanning %s\n", argv[1]);
     printf("\nGouge away the damn bloat outta your disk space!\n");
     printf("Analyzing: %s\n", argv[1]);
-
-    // measures time execution 
-    clock_t start = clock(); 
-
-    // Directory scan
+    
+    // Measures execution time
+    clock_t start_time = clock();
+    
+    // Mutex for thread-safe access
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    
+    // Gets main subdirectories
+    char subdirs[MAX_THREADS][MAX_PATH_LEN];
+    int num_subdirs = get_subdirs(argv[1], subdirs);
+    
+    printf("Found %d top-level directories. Spawning threads...\n", num_subdirs);
     printf("Scanning directories...\n");
-    uint64_t total = scan_directory(argv[1]);
-
-    clock_t ent_time = clock();
-    double elapsed = (double)(ent_time - start) / CLOCKS_PER_SEC;
-
-    printf("\nProcessing... \n");
-
-    //sort directories by decrescent size
+    
+    uint64_t total = 0;
+    
+    // If few subdirs, use single-threaded approach
+    if (num_subdirs == 0 || num_subdirs == 1) {
+        // Single-threaded (small directory or no subdirs)
+        total = scan_directory(argv[1], dirs, &dir_count, &file_count, &mutex);
+    } else {
+        // Multi-threaded approach
+        pthread_t threads[MAX_THREADS];
+        ThreadTask tasks[MAX_THREADS];
+        int num_threads = num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS;
+        
+        // Creates threads
+        for (int i = 0; i < num_threads; i++) {
+            strncpy(tasks[i].path, subdirs[i], MAX_PATH_LEN);
+            tasks[i].dirs = dirs;                    // Global dirs array (for reference)
+            tasks[i].dir_count = &dir_count;         // Global dir_count (for reference)
+            tasks[i].file_count = &file_count;       // Shared file counter
+            tasks[i].mutex = &mutex;                 // Shared mutex
+            tasks[i].total_size = 0;                 // Thread's total size
+            tasks[i].local_dir_count = 0;            // Initialize thread-local count
+            tasks[i].local_dirs = malloc(MAX_DIRS * sizeof(DirInfo)); // Allocate heap memory
+            
+            if (!tasks[i].local_dirs) {
+                printf("Error: Failed to allocate memory for thread %d\n", i);
+                exit(1);
+            }
+            
+            pthread_create(&threads[i], NULL, scan_thread_worker, &tasks[i]);
+        }
+        
+        // Waits for threads to finish
+        for (int i = 0; i < num_threads; i++) {
+            pthread_join(threads[i], NULL);
+            total += tasks[i].total_size;
+        }
+        
+        // Merge all thread results into global arrays
+        merge_thread_results(tasks, num_threads, dirs, &dir_count);
+        
+        // Free allocated memory
+        for (int i = 0; i < num_threads; i++) {
+            free(tasks[i].local_dirs);
+        }
+        
+        // Scans root directory (loose files)
+        DIR *root_dir = opendir(argv[1]);
+        if (root_dir) {
+            struct dirent *entry;
+            struct stat st;
+            char fullpath[MAX_PATH_LEN];
+            
+            while ((entry = readdir(root_dir)) != NULL) {
+                // Ignore . and ..
+                if (strcmp(entry->d_name, ".") == 0 || 
+                    strcmp(entry->d_name, "..") == 0) {
+                    continue;
+                }
+                
+                // Build full path
+                snprintf(fullpath, MAX_PATH_LEN, "%s/%s", argv[1], entry->d_name);
+                
+                if (stat(fullpath, &st) == 0 && S_ISREG(st.st_mode)) {
+                    quick_add(&total, st.st_size);
+                    
+                    pthread_mutex_lock(&mutex);
+                    file_count++;
+                    pthread_mutex_unlock(&mutex);
+                }
+            }
+            closedir(root_dir);
+        }
+    }
+    
+    clock_t end_time = clock();
+    double elapsed = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+    
+    printf("\nProcessing...\n");
+    
+    // Sort directories by decreasing size
     qsort(dirs, dir_count, sizeof(DirInfo), compare_sizes);
 
-    // show top 20 largest directories
-    printf("\nTop 20 Largest Directories:\n");
-    
-    int show_count = dir_count < 20 ? dir_count : 20;
-    for(int i = 0; i < show_count; i++) {
-        char size_str[32];
-        format_size(dirs[i].size, size_str);
-
-        double percent = (dirs[i].size * 100.0) / total; 
-        printf("%2d. %-50s %10s (%5.1f%%)\n", i + 1, dirs[i].path, size_str, percent);
+    // Select top 20 non-overlapping directories (avoid listing children of a larger parent)
+    DirInfo top_dirs[20];
+    int top_count = 0;
+    for (int i = 0; i < dir_count && top_count < 20; i++) {
+        if (dirs[i].size == 0) continue;
+        int is_child = 0;
+        for (int k = 0; k < top_count; k++) {
+            if (is_subpath(top_dirs[k].path, dirs[i].path)) { is_child = 1; break; }
+        }
+        if (!is_child) {
+            top_dirs[top_count++] = dirs[i];
+        }
     }
 
-    // final summary 
+    // Show top non-overlapping largest directories
+    printf("\nTop 20 Largest Directories:\n");
+    const int PATH_COL_WIDTH = 70; // visual alignment for long paths
+    for (int i = 0; i < top_count; i++) {
+        char size_str[32];
+        char display_path[PATH_COL_WIDTH + 1];
+        format_size(top_dirs[i].size, size_str);
+        abbreviate_path(top_dirs[i].path, display_path, sizeof(display_path));
+        double percent = (total > 0) ? ((top_dirs[i].size * 100.0) / total) : 0.0;
+        printf("%2d. %-70s %10s (%5.1f%%)\n", i + 1, display_path, size_str, percent);
+    }
+    
+    // Final summary
     printf("\n Scan Completed!\n");
+    printf("============================================\n");
     char total_str[32];
     format_size(total, total_str);
-    printf("Total: %s in %d files and %d directories.\n", total_str, file_count, dir_count);
+    printf("Total: %s in %d files and %d directories.\n", 
+           total_str, file_count, dir_count);
     printf("Time taken: %.2f seconds.\n", elapsed);
-    return 0; 
-
+    printf("Threads used: %d\n", num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS);
+    
+    pthread_mutex_destroy(&mutex);
+    
+    return 0;
 }

@@ -9,9 +9,9 @@ SRC_DIR = src
 BUILD_DIR = build
 
 # Files
-C_SRC = $(SRC_DIR)/main.c
-ASM_SRC = $(SRC_DIR)/disk_asm.asm
-ASM_OBJ = $(BUILD_DIR)/disk_asm.o
+C_SRC = $(SRC_DIR)/main.c $(SRC_DIR)/scanner.c $(SRC_DIR)/cache.c
+ASM_SRC = $(SRC_DIR)/disk_assembler.asm
+ASM_OBJ = $(BUILD_DIR)/disk_assembler.o
 TARGET = diskscout
 
 # Default target
@@ -27,7 +27,7 @@ $(ASM_OBJ): $(ASM_SRC) | $(BUILD_DIR)
 
 # Compile and link
 $(TARGET): $(C_SRC) $(ASM_OBJ)
-	$(CC) $(CFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@ -lpthread
 
 # Clean
 clean:

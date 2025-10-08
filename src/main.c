@@ -7,11 +7,18 @@
 #include <time.h>
 #include <pthread.h>
 #include "scanner.h"
+#include "cache.h"
 
 // external assembly function for fast addition
 extern void quick_add(uint64_t *total, uint64_t value);
 // Assembly external function
 extern int compare_sizes(const void *a, const void *b);
+// New assembly optimizations
+extern int fast_strcmp_dot(const char *str);
+extern int fast_strcmp_dotdot(const char *str);
+extern void atomic_inc_file_count(int *file_count);
+extern int fast_should_skip(const char *name);
+extern void fast_path_copy(char *dest, const char *src, size_t max_len);
 
 // Global arrays
 DirInfo dirs[MAX_DIRS];
@@ -113,94 +120,131 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    printf("DiskScout v2.0 (Multi-threaded) - Scanning %s\n", argv[1]);
+    // Initialize cache system
+    if (cache_init() != 0) {
+        printf("Warning: Failed to initialize cache system\n");
+    }
+    
+    printf("DiskScout v2.0 (Multi-threaded + Cache) - Scanning %s\n", argv[1]);
     printf("\nGouge away the damn bloat outta your disk space!\n");
     printf("Analyzing: %s\n", argv[1]);
     
     // Measures execution time
     clock_t start_time = clock();
     
-    // Mutex for thread-safe access
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-    
-    // Gets main subdirectories
-    char subdirs[MAX_THREADS][MAX_PATH_LEN];
-    int num_subdirs = get_subdirs(argv[1], subdirs);
-    
-    printf("Found %d top-level directories. Spawning threads...\n", num_subdirs);
-    printf("Scanning directories...\n");
-    
     uint64_t total = 0;
+    int num_subdirs = 0;
     
-    // If few subdirs, use single-threaded approach
-    if (num_subdirs == 0 || num_subdirs == 1) {
-        // Single-threaded (small directory or no subdirs)
-        total = scan_directory(argv[1], dirs, &dir_count, &file_count, &mutex);
+    // Check cache first
+    printf("Checking cache...\n");
+    int cache_result = cache_load(argv[1], dirs, &dir_count, &total, &file_count);
+    
+    if (cache_result == 1) {
+        printf("Cache hit! Using cached results.\n");
+        printf("Found %d directories and %d files in cache.\n", dir_count, file_count);
+    } else if (cache_result == 0) {
+        printf("Cache miss or invalid. Performing fresh scan...\n");
     } else {
-        // Multi-threaded approach
-        pthread_t threads[MAX_THREADS];
-        ThreadTask tasks[MAX_THREADS];
-        int num_threads = num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS;
+        printf("Cache error. Performing fresh scan...\n");
+    }
+    
+    // Only perform fresh scan if cache miss
+    if (cache_result != 1) {
+        // Mutex for thread-safe access
+        pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
         
-        // Creates threads
-        for (int i = 0; i < num_threads; i++) {
-            strncpy(tasks[i].path, subdirs[i], MAX_PATH_LEN);
-            tasks[i].dirs = dirs;                    // Global dirs array (for reference)
-            tasks[i].dir_count = &dir_count;         // Global dir_count (for reference)
-            tasks[i].file_count = &file_count;       // Shared file counter
-            tasks[i].mutex = &mutex;                 // Shared mutex
-            tasks[i].total_size = 0;                 // Thread's total size
-            tasks[i].local_dir_count = 0;            // Initialize thread-local count
-            tasks[i].local_dirs = malloc(MAX_DIRS * sizeof(DirInfo)); // Allocate heap memory
+        // Gets main subdirectories
+        char subdirs[MAX_THREADS][MAX_PATH_LEN];
+        num_subdirs = get_subdirs(argv[1], subdirs);
+        
+        printf("Found %d top-level directories. Spawning threads...\n", num_subdirs);
+        printf("Scanning directories...\n");
+        
+        // If few subdirs, use single-threaded approach
+        if (num_subdirs == 0 || num_subdirs == 1) {
+            // Single-threaded (small directory or no subdirs)
+            total = scan_directory(argv[1], dirs, &dir_count, &file_count, &mutex);
+        } else {
+            // Multi-threaded approach
+            pthread_t threads[MAX_THREADS];
+            ThreadTask tasks[MAX_THREADS];
+            int num_threads = num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS;
             
-            if (!tasks[i].local_dirs) {
-                printf("Error: Failed to allocate memory for thread %d\n", i);
-                exit(1);
-            }
-            
-            pthread_create(&threads[i], NULL, scan_thread_worker, &tasks[i]);
-        }
-        
-        // Waits for threads to finish
-        for (int i = 0; i < num_threads; i++) {
-            pthread_join(threads[i], NULL);
-            total += tasks[i].total_size;
-        }
-        
-        // Merge all thread results into global arrays
-        merge_thread_results(tasks, num_threads, dirs, &dir_count);
-        
-        // Free allocated memory
-        for (int i = 0; i < num_threads; i++) {
-            free(tasks[i].local_dirs);
-        }
-        
-        // Scans root directory (loose files)
-        DIR *root_dir = opendir(argv[1]);
-        if (root_dir) {
-            struct dirent *entry;
-            struct stat st;
-            char fullpath[MAX_PATH_LEN];
-            
-            while ((entry = readdir(root_dir)) != NULL) {
-                // Ignore . and ..
-                if (strcmp(entry->d_name, ".") == 0 || 
-                    strcmp(entry->d_name, "..") == 0) {
-                    continue;
+            // Creates threads
+            for (int i = 0; i < num_threads; i++) {
+                strncpy(tasks[i].path, subdirs[i], MAX_PATH_LEN);
+                tasks[i].dirs = dirs;                    // Global dirs array (for reference)
+                tasks[i].dir_count = &dir_count;         // Global dir_count (for reference)
+                tasks[i].file_count = &file_count;       // Shared file counter
+                tasks[i].mutex = &mutex;                 // Shared mutex
+                tasks[i].total_size = 0;                 // Thread's total size
+                tasks[i].local_dir_count = 0;            // Initialize thread-local count
+                tasks[i].local_dirs = malloc(MAX_DIRS * sizeof(DirInfo)); // Allocate heap memory
+                
+                if (!tasks[i].local_dirs) {
+                    printf("Error: Failed to allocate memory for thread %d\n", i);
+                    exit(1);
                 }
                 
-                // Build full path
-                snprintf(fullpath, MAX_PATH_LEN, "%s/%s", argv[1], entry->d_name);
+                pthread_create(&threads[i], NULL, scan_thread_worker, &tasks[i]);
+            }
+            
+            // Waits for threads to finish
+            for (int i = 0; i < num_threads; i++) {
+                pthread_join(threads[i], NULL);
+                total += tasks[i].total_size;
+            }
+            
+            // Merge all thread results into global arrays
+            merge_thread_results(tasks, num_threads, dirs, &dir_count);
+            
+            // Free allocated memory
+            for (int i = 0; i < num_threads; i++) {
+                free(tasks[i].local_dirs);
+            }
+            
+            // Scans root directory (loose files)
+            DIR *root_dir = opendir(argv[1]);
+            if (root_dir) {
+                struct dirent *entry;
+                struct stat st;
+                char fullpath[MAX_PATH_LEN];
                 
-                if (stat(fullpath, &st) == 0 && S_ISREG(st.st_mode)) {
-                    quick_add(&total, st.st_size);
+                while ((entry = readdir(root_dir)) != NULL) {
+                    // Ignore . and ..
+                    if (strcmp(entry->d_name, ".") == 0 || 
+                        strcmp(entry->d_name, "..") == 0) {
+                        continue;
+                    }
                     
-                    pthread_mutex_lock(&mutex);
-                    file_count++;
-                    pthread_mutex_unlock(&mutex);
+                    // Build full path
+                    snprintf(fullpath, MAX_PATH_LEN, "%s/%s", argv[1], entry->d_name);
+                    
+                    if (stat(fullpath, &st) == 0 && S_ISREG(st.st_mode)) {
+                        quick_add(&total, st.st_size);
+                        
+                        // Use atomic assembly function instead of mutex
+                        atomic_inc_file_count(&file_count);
+                    }
                 }
+                closedir(root_dir);
             }
-            closedir(root_dir);
+        }
+        
+        // Save results to cache
+        printf("Saving results to cache...\n");
+        if (cache_save(argv[1], dirs, dir_count, total, file_count) == 0) {
+            printf("Cache saved successfully.\n");
+        } else {
+            printf("Warning: Failed to save cache.\n");
+        }
+        
+        pthread_mutex_destroy(&mutex);
+    } else {
+        // Cache hit - use cached total
+        total = 0;
+        for (int i = 0; i < dir_count; i++) {
+            total += dirs[i].size;
         }
     }
     
@@ -246,9 +290,14 @@ int main(int argc, char *argv[]) {
     printf("Total: %s in %d files and %d directories.\n", 
            total_str, file_count, dir_count);
     printf("Time taken: %.2f seconds.\n", elapsed);
-    printf("Threads used: %d\n", num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS);
+    if (cache_result != 1) {
+        printf("Threads used: %d\n", num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS);
+    } else {
+        printf("Cache used: Yes\n");
+    }
     
-    pthread_mutex_destroy(&mutex);
+    // Cleanup cache system
+    cache_cleanup();
     
     return 0;
 }

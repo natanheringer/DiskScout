@@ -8,6 +8,12 @@
 #include <pthread.h>
 #include "scanner.h"
 
+// Assembly function declarations
+extern int fast_strcmp_dot(const char *str);
+extern int fast_strcmp_dotdot(const char *str);
+extern void atomic_inc_file_count(int *file_count);
+extern int fast_should_skip(const char *name);
+
 // external assembly functions
 extern void quick_add(uint64_t *total, uint64_t value);
 
@@ -51,13 +57,13 @@ uint64_t scan_directory(
     }
 
     while((entry = readdir(dir)) != NULL){
-        // ignore . and ..
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+        // ignore . and .. using fast assembly functions
+        if (fast_strcmp_dot(entry->d_name) || fast_strcmp_dotdot(entry->d_name)) {
             continue;
         }
 
-        // ignore problematic directories
-        if (should_skip(entry->d_name)) {
+        // ignore problematic directories using fast assembly function
+        if (fast_should_skip(entry->d_name)) {
             continue;
         }
 
@@ -76,16 +82,14 @@ uint64_t scan_directory(
                 // is file = size sum 
                 total_size += st.st_size;
 
-                // thread-safe: increment counter
-                pthread_mutex_lock(mutex);
-                (*file_count)++;
+                // Use atomic assembly function instead of mutex
+                atomic_inc_file_count(file_count);
 
-                // Progress indicator every 1000 files
+                // Progress indicator every 1000 files (no mutex needed for read)
                 if (*file_count % 1000 == 0) {
                     printf("\rScanning... %d files found", *file_count);
                     fflush(stdout);
                 }
-                pthread_mutex_unlock(mutex);
             }
         }
     }

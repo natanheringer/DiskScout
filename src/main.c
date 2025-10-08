@@ -20,8 +20,9 @@ extern void atomic_inc_file_count(int *file_count);
 extern int fast_should_skip(const char *name);
 extern void fast_path_copy(char *dest, const char *src, size_t max_len);
 
-// Global arrays
-DirInfo dirs[MAX_DIRS];
+// Global arrays - now dynamically allocated
+DirInfo *dirs = NULL;
+int max_dirs = 0;
 int dir_count = 0;
 int file_count = 0;
 
@@ -125,6 +126,14 @@ int main(int argc, char *argv[]) {
         printf("Warning: Failed to initialize cache system\n");
     }
     
+    // Initialize dynamic directory array
+    max_dirs = INITIAL_MAX_DIRS;
+    dirs = malloc(max_dirs * sizeof(DirInfo));
+    if (!dirs) {
+        printf("Error: Failed to allocate memory for directory array\n");
+        return 1;
+    }
+    
     printf("DiskScout v2.0 (Multi-threaded + Cache) - Scanning %s\n", argv[1]);
     printf("\nGouge away the damn bloat outta your disk space!\n");
     printf("Analyzing: %s\n", argv[1]);
@@ -163,7 +172,7 @@ int main(int argc, char *argv[]) {
         // If few subdirs, use single-threaded approach
         if (num_subdirs == 0 || num_subdirs == 1) {
             // Single-threaded (small directory or no subdirs)
-            total = scan_directory(argv[1], dirs, &dir_count, &file_count, &mutex);
+            total = scan_directory(argv[1], dirs, &dir_count, &file_count, &mutex, &max_dirs);
         } else {
             // Multi-threaded approach
             pthread_t threads[MAX_THREADS];
@@ -179,7 +188,8 @@ int main(int argc, char *argv[]) {
                 tasks[i].mutex = &mutex;                 // Shared mutex
                 tasks[i].total_size = 0;                 // Thread's total size
                 tasks[i].local_dir_count = 0;            // Initialize thread-local count
-                tasks[i].local_dirs = malloc(MAX_DIRS * sizeof(DirInfo)); // Allocate heap memory
+                tasks[i].max_dirs = &max_dirs;           // Pointer to max_dirs for dynamic growth
+                tasks[i].local_dirs = malloc(INITIAL_MAX_DIRS * sizeof(DirInfo)); // Allocate heap memory
                 
                 if (!tasks[i].local_dirs) {
                     printf("Error: Failed to allocate memory for thread %d\n", i);
@@ -298,6 +308,11 @@ int main(int argc, char *argv[]) {
     
     // Cleanup cache system
     cache_cleanup();
+    
+    // Cleanup dynamic directory array
+    if (dirs) {
+        free(dirs);
+    }
     
     return 0;
 }

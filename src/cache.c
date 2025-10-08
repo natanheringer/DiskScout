@@ -194,7 +194,7 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
     *total_size = 0;
     *file_count = 0;
     
-    for (uint32_t i = 0; i < header.entry_count && *dir_count < MAX_DIRS; i++) {
+    for (uint32_t i = 0; i < header.entry_count; i++) {
         CacheEntry entry;
 #ifdef _WIN32
         if ((size_t)(end - p) < sizeof(CacheEntry)) break;

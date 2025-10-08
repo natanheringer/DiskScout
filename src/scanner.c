@@ -56,7 +56,8 @@ static uint64_t scan_directory_win(
     DirInfo *dirs,
     int *dir_count,
     int *file_count,
-    pthread_mutex_t *mutex
+    pthread_mutex_t *mutex,
+    int *max_dirs
 ) {
     wchar_t wpath[MAX_PATH_LEN];
     int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH_LEN);
@@ -99,17 +100,17 @@ static uint64_t scan_directory_win(
         char childUtf8[MAX_PATH_LEN];
         WideCharToMultiByte(CP_UTF8, 0, childW, -1, childUtf8, MAX_PATH_LEN, NULL, NULL);
 
-        if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            // Recurse into directory
-            uint64_t dir_sz = scan_directory_win(childUtf8, dirs, dir_count, file_count, mutex);
-            total_size += dir_sz;
+                if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    // Recurse into directory
+                    uint64_t dir_sz = scan_directory_win(childUtf8, dirs, dir_count, file_count, mutex, max_dirs);
+                    total_size += dir_sz;
         } else {
             ULARGE_INTEGER sz; sz.LowPart = ffd.nFileSizeLow; sz.HighPart = ffd.nFileSizeHigh;
             total_size += sz.QuadPart;
 
             atomic_inc_file_count(file_count);
             if (*file_count % 1000 == 0) {
-                printf("\rScanning... %d files found", *file_count);
+                printf("\rScanning... %d files found, %d directories", *file_count, *dir_count);
                 fflush(stdout);
             }
         }
@@ -117,10 +118,11 @@ static uint64_t scan_directory_win(
 
     FindClose(hFind);
 
-    // Store current directory result
-    if (dirs && dir_count) {
+    // Store current directory result (only if significant size or top-level)
+    if (dirs && dir_count && (total_size > 1024*1024 || strchr(path, '\\') == NULL || strchr(strchr(path, '\\') + 1, '\\') == NULL)) {
         pthread_mutex_lock(mutex);
-        if (*dir_count < MAX_DIRS) {
+        // Grow array if needed
+        if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
             strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
             dirs[*dir_count].size = total_size;
             (*dir_count)++;
@@ -138,10 +140,11 @@ uint64_t scan_directory(
     DirInfo *dirs,
     int *dir_count,
     int *file_count,
-    pthread_mutex_t *mutex
+    pthread_mutex_t *mutex,
+    int *max_dirs
 ) {
 #ifdef _WIN32
-    return scan_directory_win(path, dirs, dir_count, file_count, mutex);
+    return scan_directory_win(path, dirs, dir_count, file_count, mutex, max_dirs);
 #else
     DIR *dir;
     struct dirent *entry; 
@@ -171,7 +174,7 @@ uint64_t scan_directory(
 
             if (S_ISDIR(st.st_mode)){
                 // is directory: recursively scan
-                uint64_t dir_size = scan_directory(fullpath, dirs, dir_count, file_count, mutex);
+                uint64_t dir_size = scan_directory(fullpath, dirs, dir_count, file_count, mutex, max_dirs);
 
                 // add subdirectory size to current directory total
                 total_size += dir_size;
@@ -185,7 +188,7 @@ uint64_t scan_directory(
 
                 // Progress indicator every 1000 files (no mutex needed for read)
                 if (*file_count % 1000 == 0) {
-                    printf("\rScanning... %d files found", *file_count);
+                    printf("\rScanning... %d files found, %d directories", *file_count, *dir_count);
                     fflush(stdout);
                 }
             }
@@ -194,10 +197,11 @@ uint64_t scan_directory(
 
     closedir(dir);
     
-    // Store the current directory in the results array
-    if (dirs && dir_count) {
+    // Store the current directory in the results array (only if significant size or top-level)
+    if (dirs && dir_count && (total_size > 1024*1024 || strchr(path, '/') == NULL || strchr(strchr(path, '/') + 1, '/') == NULL)) {
         pthread_mutex_lock(mutex);
-        if (*dir_count < MAX_DIRS) {
+        // Grow array if needed
+        if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
             strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
             dirs[*dir_count].size = total_size;
             (*dir_count)++;
@@ -218,9 +222,46 @@ void* scan_thread_worker(void *arg) {
     task->local_dir_count = 0;
 
     // accumulate total per thread using thread-local storage
-    task->total_size = scan_directory(task->path, task->local_dirs, &task->local_dir_count, task->file_count, task->mutex);
+    int local_max_dirs = INITIAL_MAX_DIRS;
+    task->total_size = scan_directory(task->path, task->local_dirs, &task->local_dir_count, task->file_count, task->mutex, &local_max_dirs);
 
     return NULL; 
+}
+
+// Dynamic array management (thread-safe)
+int grow_directory_array(DirInfo **dirs, int *max_dirs, int current_count, pthread_mutex_t *mutex) {
+    if (current_count < *max_dirs) {
+        return 0; // No need to grow
+    }
+    
+    // Lock mutex before growing (if provided)
+    if (mutex) {
+        pthread_mutex_lock(mutex);
+        
+        // Double-check after acquiring lock (another thread might have grown it)
+        if (current_count < *max_dirs) {
+            pthread_mutex_unlock(mutex);
+            return 0; // No need to grow
+        }
+    }
+    
+    // Double the size
+    int new_max = *max_dirs * 2;
+    DirInfo *new_dirs = realloc(*dirs, new_max * sizeof(DirInfo));
+    
+    if (!new_dirs) {
+        if (mutex) pthread_mutex_unlock(mutex);
+        return -1; // Failed to grow
+    }
+    
+    *dirs = new_dirs;
+    *max_dirs = new_max;
+    
+    printf("\rGrowing directory array to %d entries (current: %d)...", new_max, current_count);
+    fflush(stdout);
+    
+    if (mutex) pthread_mutex_unlock(mutex);
+    return 0;
 }
 
 // Merge thread results into global arrays
@@ -229,7 +270,13 @@ void merge_thread_results(ThreadTask *tasks, int num_threads, DirInfo *global_di
     
     // Merge all thread-local results into global array
     for (int i = 0; i < num_threads; i++) {
-        for (int j = 0; j < tasks[i].local_dir_count && *global_dir_count < MAX_DIRS; j++) {
+        for (int j = 0; j < tasks[i].local_dir_count; j++) {
+            // Grow array if needed (no mutex needed here since we're in main thread)
+            if (grow_directory_array(&global_dirs, tasks[i].max_dirs, *global_dir_count, NULL) != 0) {
+                printf("Error: Failed to grow directory array\n");
+                return;
+            }
+            
             global_dirs[*global_dir_count] = tasks[i].local_dirs[j];
             (*global_dir_count)++;
         }

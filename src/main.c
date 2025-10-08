@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "scanner.h"
 #include "cache.h"
 
@@ -251,11 +254,8 @@ int main(int argc, char *argv[]) {
         
         pthread_mutex_destroy(&mutex);
     } else {
-        // Cache hit - use cached total
-        total = 0;
-        for (int i = 0; i < dir_count; i++) {
-            total += dirs[i].size;
-        }
+        // Cache hit - total is already correct from cache_load
+        // No need to recalculate!
     }
     
     clock_t end_time = clock();
@@ -292,13 +292,31 @@ int main(int argc, char *argv[]) {
         printf("%2d. %-70s %10s (%5.1f%%)\n", i + 1, display_path, size_str, percent);
     }
     
+    // Get physical disk usage (Windows API - zero overhead)
+    uint64_t physical_size = 0;
+    uint64_t free_bytes = 0;
+    uint64_t total_bytes = 0;
+    
+#ifdef _WIN32
+    if (GetDiskFreeSpaceExA(argv[1], (PULARGE_INTEGER)&free_bytes, 
+                           (PULARGE_INTEGER)&total_bytes, NULL)) {
+        physical_size = total_bytes - free_bytes;
+    }
+#endif
+
     // Final summary
     printf("\n Scan Completed!\n");
     printf("============================================\n");
     char total_str[32];
+    char physical_str[32];
     format_size(total, total_str);
-    printf("Total: %s in %d files and %d directories.\n", 
-           total_str, file_count, dir_count);
+    format_size(physical_size, physical_str);
+    
+    printf("Logical Size: %s (scanned files + links)\n", total_str);
+    if (physical_size > 0) {
+        printf("Physical Size: %s (actual disk usage)\n", physical_str);
+    }
+    printf("Files: %d | Directories: %d\n", file_count, dir_count);
     printf("Time taken: %.2f seconds.\n", elapsed);
     if (cache_result != 1) {
         printf("Threads used: %d\n", num_subdirs < MAX_THREADS ? num_subdirs : MAX_THREADS);

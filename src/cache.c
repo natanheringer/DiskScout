@@ -191,8 +191,8 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
     
     // Read cache entries
     *dir_count = 0;
-    *total_size = 0;
-    *file_count = 0;
+    *total_size = header.total_size;
+    *file_count = header.file_count;
     
     for (uint32_t i = 0; i < header.entry_count; i++) {
         CacheEntry entry;
@@ -216,9 +216,7 @@ int cache_load(const char* scan_path, DirInfo* dirs, int* dir_count, uint64_t* t
         strncpy(dirs[*dir_count].path, entry.path, MAX_PATH_LEN);
         dirs[*dir_count].size = entry.size;
         (*dir_count)++;
-        
-        *total_size += entry.size;
-        *file_count += entry.file_count;
+        // Do NOT add to totals here; totals already loaded from header
     }
     
 #ifdef _WIN32
@@ -262,6 +260,8 @@ int cache_save(const char* scan_path, const DirInfo* dirs, int dir_count, uint64
         .magic = CACHE_MAGIC,
         .version = CACHE_VERSION,
         .entry_count = (uint32_t)dir_count,
+        .total_size = total_size,
+        .file_count = (uint32_t)file_count,
         .created_at = time(NULL),
         .last_updated = time(NULL)
     };

@@ -6,7 +6,7 @@
 #include "scanner.h"
 
 // Cache file format version
-#define CACHE_VERSION 1
+#define CACHE_VERSION 2
 #define CACHE_MAGIC 0x4449534B  // "DISK" in hex
 
 // Cache file structure
@@ -23,6 +23,8 @@ typedef struct {
     uint32_t magic;         // Cache file signature
     uint32_t version;       // Cache format version
     uint32_t entry_count;   // Number of cache entries
+    uint64_t total_size;    // Total size of all files
+    uint32_t file_count;    // Total number of files
     time_t created_at;      // When cache was created
     time_t last_updated;    // When cache was last updated
 } CacheHeader;

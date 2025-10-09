@@ -27,6 +27,7 @@ public:
     void updateData(const std::vector<ScannerWrapper::DirectoryInfo>& directories, uint64_t totalSize);
     void setRootPath(const QString& path);
     void resetView();
+    void zoomToPath(const QString& path);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -54,6 +55,7 @@ private:
     SunburstNode rootNode;
     SunburstNode* currentRoot;
     QString rootPath;
+    QString currentRootPath; // keep path to revalidate pointer safety
     QPointF center;
     double scale;
     int currentDepth;
@@ -77,8 +79,23 @@ private:
     void updateLayout();
     void calculateNodeAngles(SunburstNode& node, double startAngle, double spanAngle);
     void setNodeColor(SunburstNode& node);
-    void addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& fullPath);
+    void addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& leafFullPath, const QString& accumFullPath);
     int getMaxDepth(const SunburstNode& node) const;
+    void drawBreadcrumbs(QPainter& painter);
+    std::vector<QString> buildBreadcrumbPaths() const;
+    SunburstNode* findByFullPath(SunburstNode& node, const QString& normalizedPath);
+    void ensureCurrentRootValid();
+    void fixParentPointers(SunburstNode& node);
+    QString normalizePath(const QString& p) const;
+
+    // Hit targets for breadcrumb navigation
+    QVector<QPair<QString, QRectF>> breadcrumbHit; // store paths instead of pointers (stable)
+
+    // Header info (path, size, percent)
+    void drawHeaderInfo(QPainter& painter);
+    int computeDirCount(const SunburstNode& node) const;
+    QRectF resetButtonRect;
+    SunburstNode* lastHover = nullptr;
     
     // Animation
     QTimer* animationTimer;

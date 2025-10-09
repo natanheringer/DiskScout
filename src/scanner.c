@@ -20,6 +20,14 @@
 // Track the active dirs buffer in case grow_directory_array reallocates it
 static DirInfo *g_active_dirs = NULL;
 DirInfo* scanner_current_dirs(void) { return g_active_dirs; }
+// Progress globals (simple, single-process)
+static char g_progress_path[MAX_PATH_LEN] = {0};
+static uint64_t g_progress_bytes = 0;
+void scanner_progress_set_path(const char* path){ if (!path) return; strncpy(g_progress_path, path, MAX_PATH_LEN-1); g_progress_path[MAX_PATH_LEN-1] = '\0'; }
+const char* scanner_progress_get_path(void){ return g_progress_path; }
+void scanner_progress_add_bytes(uint64_t bytes){ g_progress_bytes += bytes; }
+uint64_t scanner_progress_get_bytes(void){ return g_progress_bytes; }
+void scanner_progress_reset(void){ g_progress_path[0] = '\0'; g_progress_bytes = 0; }
 // Assembly function declarations
 extern int fast_strcmp_dot(const char *str);
 extern int fast_strcmp_dotdot(const char *str);
@@ -107,11 +115,14 @@ static uint64_t scan_directory_win(
 
                 if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     // Recurse into directory
+                    scanner_progress_set_path(childUtf8);
                     uint64_t dir_sz = scan_directory_win(childUtf8, dirs, dir_count, file_count, mutex, max_dirs);
                     total_size += dir_sz;
         } else {
+            scanner_progress_set_path(childUtf8);
             ULARGE_INTEGER sz; sz.LowPart = ffd.nFileSizeLow; sz.HighPart = ffd.nFileSizeHigh;
             total_size += sz.QuadPart;
+            scanner_progress_add_bytes(sz.QuadPart);
 
             atomic_inc_file_count(file_count);
             if (*file_count % 1000 == 0) {
@@ -129,7 +140,8 @@ static uint64_t scan_directory_win(
         // Grow array if needed
         if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
             g_active_dirs = dirs;
-            strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
+            strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN - 1);
+            dirs[*dir_count].path[MAX_PATH_LEN - 1] = '\0';
             dirs[*dir_count].size = total_size;
             (*dir_count)++;
         }
@@ -195,7 +207,7 @@ uint64_t scan_directory(
 
                 // Progress indicator every 1000 files (no mutex needed for read)
                 if (*file_count % 1000 == 0) {
-                    printf("\rScanning... %d files found, %d directories", *file_count, *dir_count);
+                    printf("\rScanning... %d files, %d dirs | %s", *file_count, *dir_count, g_progress_path);
                     fflush(stdout);
                 }
             }
@@ -210,7 +222,8 @@ uint64_t scan_directory(
         // Grow array if needed
         if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
             g_active_dirs = dirs;
-            strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
+            strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN - 1);
+            dirs[*dir_count].path[MAX_PATH_LEN - 1] = '\0';
             dirs[*dir_count].size = total_size;
             (*dir_count)++;
         }

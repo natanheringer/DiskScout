@@ -40,6 +40,11 @@ int backend_save_cache(const char* path,
                        uint64_t total_size,
                        int total_file_count);
 
+// Live progress API for GUI polling
+int backend_get_progress_percent(void);
+const char* backend_get_progress_path(void);
+void backend_get_counts(int* files, int* dirs);
+
 #ifdef __cplusplus
 }
 #endif

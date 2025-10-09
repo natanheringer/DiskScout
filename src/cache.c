@@ -42,7 +42,11 @@ static void get_cache_file_path(const char* scan_path, char* cache_file_path, si
     
     // Convert to positive and create filename
     uint32_t positive_hash = hash & 0x7FFFFFFF;
+    // Ensure we never overflow the destination buffer
+    // Reserve space for separator, prefix, hash, extension and terminator
+    // Worst-case length: cache_dir_path + "/cache_" + 8 hex + ".db" + \0
     snprintf(cache_file_path, max_len, "%s/cache_%08x.db", cache_dir_path, positive_hash);
+    cache_file_path[max_len - 1] = '\0';
 }
 
 // Get cache directory path

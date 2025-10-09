@@ -12,6 +12,9 @@ static int g_max_dirs = 0;
 static int g_dir_count = 0;
 static int g_file_count = 0;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Progress mirrors from scanner
+extern const char* scanner_progress_get_path(void);
+extern uint64_t scanner_progress_get_bytes(void);
 
 int backend_init(void) {
     // Initialize cache system
@@ -46,6 +49,10 @@ int backend_scan_directory(const char* path,
         return 0; // Failed to allocate
     }
     
+    // Reset progress counters
+    extern void scanner_progress_reset(void);
+    scanner_progress_reset();
+
     // Perform scan
     uint64_t total = scan_directory(path, g_dirs, &g_dir_count, &g_file_count, &g_mutex, &g_max_dirs);
     // If the scanner grew the array, fetch the new pointer
@@ -63,6 +70,26 @@ int backend_scan_directory(const char* path,
     // The GUI will show empty results gracefully.
     
     return 1; // Success
+}
+
+// Expose lightweight progress data to GUI
+int backend_get_progress_percent(void) {
+    // Percent is not tracked precisely in backend; return files-based rough progress if available
+    // Without a known total, return 0..99 while running; GUI can cap visually.
+    // Here we use bytes scanned modulo to produce a non-zero moving value.
+    uint64_t b = scanner_progress_get_bytes();
+    if (b == 0) return 0;
+    // Cheap heuristic: scale down to 0..95
+    return (int)((b % (100ULL * 1024ULL * 1024ULL)) / (1024ULL * 1024ULL));
+}
+
+const char* backend_get_progress_path(void) {
+    return scanner_progress_get_path();
+}
+
+void backend_get_counts(int* files, int* dirs) {
+    if (files) *files = g_file_count;
+    if (dirs) *dirs = g_dir_count;
 }
 
 void backend_free_dirs(DirInfo* dirs) {

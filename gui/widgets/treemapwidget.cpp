@@ -49,6 +49,7 @@ TreemapWidget::~TreemapWidget()
 
 void TreemapWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>& directories, uint64_t totalSize)
 {
+    Q_UNUSED(totalSize);
     buildTreemapTree(directories);
     updateLayout();
     

@@ -58,9 +58,17 @@ void SunburstWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>
 {
     Q_UNUSED(totalSize);
     buildSunburstTree(directories);
+    // Ensure parent pointers are valid throughout
+    fixParentPointers(rootNode);
     // Precompute angles for entire tree and reset current root
     calculateNodeAngles(rootNode, 0.0, 360.0);
-    currentRoot = &rootNode;
+    // Revalidate current root by path if possible to avoid stale pointer
+    if (!currentRootPath.isEmpty()) {
+        SunburstNode* found = findByFullPath(rootNode, currentRootPath);
+        currentRoot = found ? found : &rootNode;
+    } else {
+        currentRoot = &rootNode;
+    }
     updateLayout();
     
     // Start animation
@@ -74,6 +82,21 @@ void SunburstWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>
 void SunburstWidget::setRootPath(const QString& path)
 {
     rootPath = path;
+}
+
+void SunburstWidget::zoomToPath(const QString& path)
+{
+    // Normalize path separators to match how we stored fullPath
+    QString norm = path; norm.replace('\\','/');
+    // Recompute angles to ensure up-to-date geometry
+    calculateNodeAngles(rootNode, 0.0, 360.0);
+    SunburstNode* found = findByFullPath(rootNode, norm);
+    if (found && found != currentRoot) {
+        currentRoot = found;
+        currentRootPath = norm;
+        calculateNodeAngles(*currentRoot, 0.0, 360.0);
+        update();
+    }
 }
 
 void SunburstWidget::resetView()
@@ -94,6 +117,10 @@ void SunburstWidget::paintEvent(QPaintEvent* event)
     // Clear background
     painter.fillRect(rect(), QColor(25, 25, 25));
     
+    // Draw navigation (breadcrumbs + header) first so user always has a way back
+    drawBreadcrumbs(painter);
+    drawHeaderInfo(painter);
+
     // Draw sunburst
     drawSunburst(painter);
     
@@ -103,16 +130,33 @@ void SunburstWidget::paintEvent(QPaintEvent* event)
 
 void SunburstWidget::mousePressEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton) {
-        SunburstNode* node = findNodeAt(event->pos());
-        if (node && node != currentRoot && !node->children.empty()) {
-            currentRoot = node;
+    // Handle breadcrumb clicks and reset first
+    for (const auto &pair : breadcrumbHit) {
+        if (pair.second.contains(event->pos())) {
+            QString targetPath = pair.first; // normalized path stored
+            SunburstNode* found = findByFullPath(rootNode, targetPath);
+            currentRoot = found ? found : &rootNode;
+            currentRootPath = found ? targetPath : QString();
             calculateNodeAngles(*currentRoot, 0.0, 360.0);
             update();
+            return;
+        }
+    }
+    if (event->button() == Qt::LeftButton) {
+        SunburstNode* node = findNodeAt(event->pos());
+        if (node && node != currentRoot) {
+            if (!node->children.empty()) {
+                currentRoot = node;
+                currentRootPath = QString(currentRoot->fullPath).replace('\\','/');
+                calculateNodeAngles(*currentRoot, 0.0, 360.0);
+                update();
+            }
+            return;
         }
     } else if (event->button() == Qt::RightButton) {
         if (currentRoot && currentRoot->parent) {
             currentRoot = currentRoot->parent;
+            currentRootPath = currentRoot->fullPath.isEmpty()? rootPath : QString(currentRoot->fullPath).replace('\\','/');
             calculateNodeAngles(*currentRoot, 0.0, 360.0);
             update();
         }
@@ -150,6 +194,13 @@ void SunburstWidget::resizeEvent(QResizeEvent* event)
     updateLayout();
 }
 
+QString SunburstWidget::normalizePath(const QString& p) const
+{
+    QString n = p;
+    n.replace('\\','/');
+    return n;
+}
+
 void SunburstWidget::buildSunburstTree(const std::vector<ScannerWrapper::DirectoryInfo>& directories)
 {
     // Build a multi-level hierarchy relative to rootPath
@@ -159,13 +210,13 @@ void SunburstWidget::buildSunburstTree(const std::vector<ScannerWrapper::Directo
     rootNode.size = 0;
     rootNode.depth = 0;
 
-    QString base = rootPath; base.replace('\\','/');
+    QString base = normalizePath(rootPath);
     for (const auto& d : directories) {
         rootNode.size += d.size;
-        QString p = d.path; p.replace('\\','/');
+        QString p = normalizePath(d.path);
         if (!base.isEmpty() && p.startsWith(base)) p = p.mid(base.length());
         QStringList parts = p.split('/', Qt::SkipEmptyParts);
-        addPath(rootNode, parts, 0, d.size, d.path);
+        addPath(rootNode, parts, 0, d.size, normalizePath(d.path), base);
     }
 
     // Color assignment: vivid for first level, tints deeper
@@ -197,11 +248,15 @@ void SunburstWidget::drawSunburst(QPainter& painter)
         return;
     }
     
-    // Calculate center and radius; fill most of the right panel
+    // Calculate center and radius; reserve space for breadcrumbs + header
     QRectF widgetRect = rect();
-    center = widgetRect.center() + viewOffset;
+    QFontMetrics fmCrumb(QFont("Arial", 9, QFont::Bold));
+    QFontMetrics fmHead(QFont("Arial", 10));
+    double topUi = 10 + (fmCrumb.height() + 6) + 6 + (fmHead.height() + 8) + 8;
+    QRectF chartRect = widgetRect.adjusted(0, topUi, 0, 0);
+    center = chartRect.center() + viewOffset;
     double padding = 20.0;
-    double maxRadius = qMin(widgetRect.width(), widgetRect.height()) / 2.0 - padding;
+    double maxRadius = qMin(chartRect.width(), chartRect.height()) / 2.0 - padding;
     
     // Draw center circle
     painter.setBrush(QColor(53, 53, 53));
@@ -227,20 +282,100 @@ void SunburstWidget::drawSunburst(QPainter& painter)
     std::function<void(const SunburstNode&)> drawDepth = [&](const SunburstNode& node) {
         for (const auto& ch : node.children) {
             int depthIndex = ch.depth - currentRoot->depth; // 1..maxD
-            if (depthIndex <= 0 || depthIndex > maxD) {
-                drawDepth(ch);
-                continue;
+            if (depthIndex > 0 && depthIndex <= maxD) {
+                double rInner = innerRadius + ringWidth * (depthIndex - 1);
+                double rOuter = rInner + ringWidth;
+                QRectF rect(center.x() - rOuter, center.y() - rOuter, rOuter*2, rOuter*2);
+                painter.setBrush(ch.color);
+                painter.setPen(QPen(Qt::black, 1));
+                if (ch.spanAngle > 0.0)
+                    painter.drawPie(rect, int(ch.startAngle * 16), int(ch.spanAngle * 16));
             }
-            double rInner = innerRadius + ringWidth * (depthIndex - 1);
-            double rOuter = rInner + ringWidth;
-            QRectF rect(center.x() - rOuter, center.y() - rOuter, rOuter*2, rOuter*2);
-            painter.setBrush(ch.color);
-            painter.setPen(QPen(Qt::black, 1));
-            painter.drawPie(rect, int(ch.startAngle * 16), int(ch.spanAngle * 16));
-            drawDepth(ch);
+            // Always descend to render deeper levels too
+            if (!ch.children.empty()) drawDepth(ch);
         }
     };
     drawDepth(*currentRoot);
+}
+
+std::vector<QString> SunburstWidget::buildBreadcrumbPaths() const
+{
+    std::vector<QString> paths;
+    const SunburstNode* n = currentRoot;
+    while (n) {
+        QString p = (n == &rootNode) ? normalizePath(rootPath) : normalizePath(n->fullPath);
+        paths.push_back(p);
+        n = n->parent;
+    }
+    std::reverse(paths.begin(), paths.end());
+    return paths;
+}
+
+void SunburstWidget::drawBreadcrumbs(QPainter& painter)
+{
+    breadcrumbHit.clear();
+    auto crumbs = buildBreadcrumbPaths();
+    if (crumbs.empty()) return;
+
+    painter.setFont(QFont("Arial", 9, QFont::Bold));
+    painter.setPen(Qt::white);
+    QFontMetrics fm(painter.font());
+
+    int x = 10;
+    int y = 10;
+    for (size_t i = 0; i < crumbs.size(); ++i) {
+        QString label;
+        if (i == 0) {
+            label = QString("Root");
+        } else {
+            QStringList parts = crumbs[i].split('/', Qt::SkipEmptyParts);
+            label = parts.isEmpty() ? QString("?") : parts.last();
+        }
+        QString shown = fm.elidedText(label, Qt::ElideRight, 140);
+        QRectF r(x, y, fm.horizontalAdvance(shown) + 10, fm.height() + 6);
+        painter.setBrush(QColor(60,60,60));
+        painter.setPen(QPen(QColor(90,90,90)));
+        painter.drawRoundedRect(r, 4, 4);
+        painter.setPen(Qt::white);
+        painter.drawText(r.adjusted(5,0, -5,0), Qt::AlignVCenter|Qt::AlignLeft, shown);
+        breadcrumbHit.push_back(qMakePair(crumbs[i], r));
+        x += r.width() + 8;
+        if (i+1 < crumbs.size()) {
+            painter.drawText(x, y + r.height()/2 + fm.ascent()/2 - 4, ">>");
+            x += 14;
+        }
+        if (x > width() - 100) break;
+    }
+}
+
+int SunburstWidget::computeDirCount(const SunburstNode& node) const
+{
+    int count = 1;
+    for (const auto& ch : node.children) count += computeDirCount(ch);
+    return count;
+}
+
+void SunburstWidget::drawHeaderInfo(QPainter& painter)
+{
+    painter.setFont(QFont("Arial", 10));
+    painter.setPen(Qt::white);
+    QFontMetrics fm(painter.font());
+
+    QString path = (currentRoot == &rootNode) ? rootPath : currentRoot->fullPath;
+    QString sizeStr = formatSize(currentRoot->size);
+    int dirCount = computeDirCount(*currentRoot) - 1;
+
+    QString info = QString("%1    •    %2    •    %3 dirs")
+                    .arg(fm.elidedText(path, Qt::ElideMiddle, width() - 260))
+                    .arg(sizeStr)
+                    .arg(dirCount);
+
+    QRectF bar(10, 34, width() - 20, fm.height() + 8);
+    painter.setBrush(QColor(45,45,45));
+    painter.setPen(QPen(QColor(70,70,70)));
+    painter.drawRoundedRect(bar, 4, 4);
+    painter.setPen(Qt::white);
+    painter.drawText(bar.adjusted(8,0,-8,0), Qt::AlignVCenter|Qt::AlignLeft, info);
 }
 
 void SunburstWidget::drawLabels(QPainter& painter)
@@ -254,9 +389,13 @@ void SunburstWidget::drawLabels(QPainter& painter)
     
     // Recompute geometry similar to drawSunburst so labels sit at a good radius
     QRectF widgetRect = rect();
-    center = widgetRect.center() + viewOffset;
+    QFontMetrics fmCrumb(QFont("Arial", 9, QFont::Bold));
+    QFontMetrics fmHead(QFont("Arial", 10));
+    double topUi = 10 + (fmCrumb.height() + 6) + 6 + (fmHead.height() + 8) + 8;
+    QRectF chartRect = widgetRect.adjusted(0, topUi, 0, 0);
+    center = chartRect.center() + viewOffset;
     double padding = 20.0;
-    double maxRadius = qMin(widgetRect.width(), widgetRect.height()) / 2.0 - padding;
+    double maxRadius = qMin(chartRect.width(), chartRect.height()) / 2.0 - padding;
     double innerRadius = qMax(24.0, maxRadius * 0.18);
     int maxD = qBound(1, getMaxDepth(*currentRoot) - currentRoot->depth, 6);
     double ringWidth = (maxRadius - innerRadius) / maxD;
@@ -324,18 +463,26 @@ QString SunburstWidget::formatSize(uint64_t bytes) const
 
 SunburstWidget::SunburstNode* SunburstWidget::findNodeAt(const QPointF& point)
 {
-    // Convert point to angle and radius relative to center
-    QPointF v = point - center;
+    // Convert point to angle and radius relative to center with reserved top UI
+    QFontMetrics fmCrumb(QFont("Arial", 9, QFont::Bold));
+    QFontMetrics fmHead(QFont("Arial", 10));
+    double topUi = 10 + (fmCrumb.height() + 6) + 6 + (fmHead.height() + 8) + 8;
+    QRectF chartRect = QRectF(QPointF(0,0), QSizeF(width(), height())).adjusted(0, topUi, 0, 0);
+    QPointF chartCenter = chartRect.center() + viewOffset;
+    QPointF v = point - chartCenter;
     double r = std::hypot(v.x(), v.y());
     double ang = std::atan2(v.y(), v.x());
     double deg = qRadiansToDegrees(ang);
     if (deg < 0) deg += 360.0;
 
     double padding = 20.0;
-    double maxRadius = qMin(width(), height()) / 2.0 - padding;
+    double maxRadius = qMin(chartRect.width(), chartRect.height()) / 2.0 - padding;
     double innerRadius = qMax(24.0, maxRadius * 0.18);
     int maxD = qBound(1, getMaxDepth(*currentRoot) - currentRoot->depth, 6);
     double ringWidth = (maxRadius - innerRadius) / maxD;
+    if (r < innerRadius || r > innerRadius + ringWidth * maxD || ringWidth <= 0.0) {
+        return currentRoot; // clicked outside valid rings; treat as current root
+    }
     int ringIdx = int((r - innerRadius) / ringWidth) + 1; // 1..maxD
 
     SunburstNode* result = nullptr;
@@ -343,7 +490,9 @@ SunburstWidget::SunburstNode* SunburstWidget::findNodeAt(const QPointF& point)
         for (auto &ch : node.children) {
             int dIdx = ch.depth - currentRoot->depth;
             if (dIdx == ringIdx) {
-                if (deg >= ch.startAngle && deg <= ch.startAngle + ch.spanAngle) {
+                if (ch.spanAngle <= 0.001) { continue; }
+                // Inclusive of start, exclusive of end to avoid tiny-gap ambiguity
+                if (deg >= ch.startAngle && deg < ch.startAngle + ch.spanAngle) {
                     result = &ch;
                     return;
                 }
@@ -356,10 +505,47 @@ SunburstWidget::SunburstNode* SunburstWidget::findNodeAt(const QPointF& point)
     return result ? result : currentRoot;
 }
 
+SunburstWidget::SunburstNode* SunburstWidget::findByFullPath(SunburstNode& node, const QString& normalizedPath)
+{
+    if (!node.fullPath.isEmpty()) {
+        QString n = node.fullPath; n.replace('\\','/');
+        if (n == normalizedPath) return &node;
+    }
+    for (auto &ch : node.children) {
+        SunburstNode* f = findByFullPath(ch, normalizedPath);
+        if (f) return f;
+    }
+    return nullptr;
+}
+
 void SunburstWidget::updateLayout()
 {
     // Update layout when widget is resized
+    ensureCurrentRootValid();
     update();
+}
+
+void SunburstWidget::ensureCurrentRootValid()
+{
+    if (!currentRoot) { currentRoot = &rootNode; currentRootPath.clear(); return; }
+    // If currentRoot pointer is from previous tree, try to re-find by stored path
+    if (currentRoot != &rootNode && !currentRootPath.isEmpty()) {
+        SunburstNode* found = findByFullPath(rootNode, currentRootPath);
+        if (!found) {
+            currentRoot = &rootNode; // fallback
+            currentRootPath.clear();
+        } else {
+            currentRoot = found;
+        }
+    }
+}
+
+void SunburstWidget::fixParentPointers(SunburstNode& node)
+{
+    for (auto &ch : node.children) {
+        ch.parent = &node;
+        fixParentPointers(ch);
+    }
 }
 
 void SunburstWidget::calculateNodeAngles(SunburstNode& node, double startAngle, double spanAngle)
@@ -392,7 +578,7 @@ void SunburstWidget::updateAnimation()
     update();
 }
 
-void SunburstWidget::addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& fullPath)
+void SunburstWidget::addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& leafFullPath, const QString& accumFullPath)
 {
     if (idx >= parts.size()) return;
     const QString &part = parts[idx];
@@ -401,18 +587,20 @@ void SunburstWidget::addPath(SunburstNode& root, const QStringList& parts, int i
     for (auto &ch : root.children) {
         if (ch.name == part) {
             ch.size += size;
-            addPath(ch, parts, idx+1, size, fullPath);
+            QString nextAccum = accumFullPath.isEmpty() ? part : (accumFullPath + "/" + part);
+            addPath(ch, parts, idx+1, size, leafFullPath, nextAccum);
             return;
         }
     }
     SunburstNode child;
     child.name = part;
-    child.fullPath = fullPath;
+    QString nextAccum = accumFullPath.isEmpty() ? part : (accumFullPath + "/" + part);
+    child.fullPath = nextAccum;
     child.size = size;
     child.depth = root.depth + 1;
     child.parent = &root;
     setNodeColor(child);
     root.children.push_back(child);
     // Recurse deeper
-    addPath(root.children.back(), parts, idx+1, size, fullPath);
+    addPath(root.children.back(), parts, idx+1, size, leafFullPath, nextAccum);
 }

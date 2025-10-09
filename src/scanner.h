@@ -56,5 +56,12 @@ int grow_directory_array(DirInfo **dirs, int *max_dirs, int current_count, pthre
 // the final, valid pointer after the scan completes.
 DirInfo* scanner_current_dirs(void);
 
+// Live progress helpers
+void scanner_progress_set_path(const char* path);
+const char* scanner_progress_get_path(void);
+void scanner_progress_add_bytes(uint64_t bytes);
+uint64_t scanner_progress_get_bytes(void);
+void scanner_progress_reset(void);
+
 
 #endif

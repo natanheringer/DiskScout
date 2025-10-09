@@ -10,6 +10,7 @@
 #include <QStandardPaths>
 #include <QSettings>
 #include <QDebug>
+#include "backend_interface.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -267,13 +268,32 @@ void MainWindow::setupConnections()
     // Tree view connections
     connect(treeView, &QTreeView::customContextMenuRequested, 
             this, &MainWindow::onContextMenuRequested);
+    connect(treeView->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex &current){
+        if (!current.isValid()) return;
+        QModelIndex sourceIdx = sortProxy ? sortProxy->mapToSource(current) : current;
+        QString path = fileSystemModel->getPath(sourceIdx);
+        if (!path.isEmpty()) {
+            // Keep datasets as-is; request a zoom to the selected path
+            sunburstWidget->zoomToPath(path);
+        }
+    });
     
     // Progress timer
     progressTimer = new QTimer(this);
     connect(progressTimer, &QTimer::timeout, [this]() {
         if (scanThread && scanThread->isRunning()) {
             int progress = ScannerWrapper::getScanProgress();
-            progressBar->setValue(progress);
+            if (progress <= 0) {
+                // fallback to backend bytes-based heuristic percent
+                progress = backend_get_progress_percent();
+            }
+            progressBar->setValue(qBound(0, progress, 99));
+            QString p = ScannerWrapper::getProgressPath();
+            if (!p.isEmpty()) {
+                statusLabel->setText(QString("Scanning: %1").arg(p));
+            } else {
+                statusLabel->setText("Scanning...");
+            }
         }
     });
 }

@@ -55,6 +55,7 @@ public:
     
     // Get scan progress (for progress bar)
     static int getScanProgress();
+    static QString getProgressPath();
     
     // Cancel current scan
     static void cancelScan();

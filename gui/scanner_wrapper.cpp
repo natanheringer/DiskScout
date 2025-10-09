@@ -95,6 +95,7 @@ bool ScannerWrapper::saveCache(const QString& path,
                               uint64_t totalSize,
                               int totalFileCount,
                               int totalDirCount) {
+    Q_UNUSED(totalDirCount);
     
     // Convert QString to C string
     QByteArray pathBytes = path.toUtf8();
@@ -132,6 +133,12 @@ void ScannerWrapper::clearCache(const QString& path) {
 
 int ScannerWrapper::getScanProgress() {
     return g_scanProgress;
+}
+
+QString ScannerWrapper::getProgressPath() {
+    const char* p = backend_get_progress_path();
+    if (!p) return QString();
+    return QString::fromUtf8(p);
 }
 
 void ScannerWrapper::cancelScan() {

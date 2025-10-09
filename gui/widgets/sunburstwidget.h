@@ -43,12 +43,17 @@ private:
         QRectF rect;
         QColor color;
         std::vector<SunburstNode> children;
+        SunburstNode* parent;
         int depth;
+        double startAngle; // degrees within current root
+        double spanAngle;  // degrees within current root
         
-        SunburstNode() : size(0), depth(0) {}
+        SunburstNode() : size(0), parent(nullptr), depth(0), startAngle(0.0), spanAngle(0.0) {}
     };
     
     SunburstNode rootNode;
+    SunburstNode* currentRoot;
+    QString rootPath;
     QPointF center;
     double scale;
     int currentDepth;
@@ -58,8 +63,9 @@ private:
     QPointF dragStart;
     QPointF viewOffset;
     
-    // Colors for different file types
+    // Colors for different file types (fallback) and vivid top-level palette
     std::vector<QColor> fileTypeColors;
+    std::vector<QColor> vividPalette;
     
     void buildSunburstTree(const std::vector<ScannerWrapper::DirectoryInfo>& directories);
     void drawSunburst(QPainter& painter);
@@ -71,6 +77,8 @@ private:
     void updateLayout();
     void calculateNodeAngles(SunburstNode& node, double startAngle, double spanAngle);
     void setNodeColor(SunburstNode& node);
+    void addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& fullPath);
+    int getMaxDepth(const SunburstNode& node) const;
     
     // Animation
     QTimer* animationTimer;

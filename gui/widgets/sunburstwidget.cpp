@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QtMath>
+#include <functional>
 
 SunburstWidget::SunburstWidget(QWidget *parent)
     : QWidget(parent)
@@ -20,6 +21,7 @@ SunburstWidget::SunburstWidget(QWidget *parent)
 {
     setMinimumSize(400, 400);
     setMouseTracking(true);
+    currentRoot = &rootNode;
     
     // Initialize file type colors
     fileTypeColors = {
@@ -31,6 +33,13 @@ SunburstWidget::SunburstWidget(QWidget *parent)
         QColor(255, 165, 0),   // Orange - Archives
         QColor(100, 100, 100), // Gray - Directories
         QColor(200, 200, 200)  // Light Gray - Others
+    };
+    // Vivid palette similar to Baobab (cycling hues)
+    vividPalette = {
+        QColor::fromHsv( 10, 200, 220), QColor::fromHsv( 35, 200, 220),
+        QColor::fromHsv( 60, 200, 220), QColor::fromHsv(120, 200, 220),
+        QColor::fromHsv(160, 200, 220), QColor::fromHsv(200, 200, 220),
+        QColor::fromHsv(260, 200, 220), QColor::fromHsv(300, 200, 220)
     };
     
     // Setup animation timer
@@ -47,7 +56,11 @@ SunburstWidget::~SunburstWidget()
 
 void SunburstWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>& directories, uint64_t totalSize)
 {
+    Q_UNUSED(totalSize);
     buildSunburstTree(directories);
+    // Precompute angles for entire tree and reset current root
+    calculateNodeAngles(rootNode, 0.0, 360.0);
+    currentRoot = &rootNode;
     updateLayout();
     
     // Start animation
@@ -60,8 +73,7 @@ void SunburstWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>
 
 void SunburstWidget::setRootPath(const QString& path)
 {
-    // Implementation for setting root path
-    Q_UNUSED(path)
+    rootPath = path;
 }
 
 void SunburstWidget::resetView()
@@ -92,8 +104,18 @@ void SunburstWidget::paintEvent(QPaintEvent* event)
 void SunburstWidget::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
-        isDragging = true;
-        dragStart = event->pos();
+        SunburstNode* node = findNodeAt(event->pos());
+        if (node && node != currentRoot && !node->children.empty()) {
+            currentRoot = node;
+            calculateNodeAngles(*currentRoot, 0.0, 360.0);
+            update();
+        }
+    } else if (event->button() == Qt::RightButton) {
+        if (currentRoot && currentRoot->parent) {
+            currentRoot = currentRoot->parent;
+            calculateNodeAngles(*currentRoot, 0.0, 360.0);
+            update();
+        }
     }
 }
 
@@ -130,32 +152,48 @@ void SunburstWidget::resizeEvent(QResizeEvent* event)
 
 void SunburstWidget::buildSunburstTree(const std::vector<ScannerWrapper::DirectoryInfo>& directories)
 {
+    // Build a multi-level hierarchy relative to rootPath
     rootNode = SunburstNode();
     rootNode.name = "Root";
     rootNode.fullPath = "";
     rootNode.size = 0;
     rootNode.depth = 0;
-    
-    // Calculate total size
-    for (const auto& dir : directories) {
-        rootNode.size += dir.size;
+
+    QString base = rootPath; base.replace('\\','/');
+    for (const auto& d : directories) {
+        rootNode.size += d.size;
+        QString p = d.path; p.replace('\\','/');
+        if (!base.isEmpty() && p.startsWith(base)) p = p.mid(base.length());
+        QStringList parts = p.split('/', Qt::SkipEmptyParts);
+        addPath(rootNode, parts, 0, d.size, d.path);
     }
-    
-    // Build tree structure (simplified - just add all as children)
-    for (const auto& dir : directories) {
-        SunburstNode node;
-        node.name = QFileInfo(dir.path).fileName();
-        node.fullPath = dir.path;
-        node.size = dir.size;
-        node.depth = 1;
-        setNodeColor(node);
-        rootNode.children.push_back(node);
+
+    // Color assignment: vivid for first level, tints deeper
+    for (size_t i = 0; i < rootNode.children.size(); ++i) {
+        QColor baseColor = vividPalette.empty() ? QColor::fromHsv(int(i*35)%360, 200, 220) : vividPalette[i % vividPalette.size()];
+        rootNode.children[i].color = baseColor;
+        std::function<void(SunburstNode&, int)> tint = [&](SunburstNode& n, int depth){
+            for (auto &ch : n.children) {
+                ch.color = baseColor.lighter(100 + depth*10);
+                tint(ch, depth+1);
+            }
+        };
+        tint(rootNode.children[i], 1);
     }
+}
+
+int SunburstWidget::getMaxDepth(const SunburstNode& node) const
+{
+    int md = node.depth;
+    for (const auto& ch : node.children) {
+        md = std::max(md, getMaxDepth(ch));
+    }
+    return md;
 }
 
 void SunburstWidget::drawSunburst(QPainter& painter)
 {
-    if (rootNode.children.empty()) {
+    if (currentRoot->children.empty()) {
         return;
     }
     
@@ -175,52 +213,44 @@ void SunburstWidget::drawSunburst(QPainter& painter)
     painter.setPen(Qt::white);
     painter.setFont(QFont("Arial", 10, QFont::Bold));
     painter.drawText(QRectF(center.x() - innerRadius, center.y() - 10, innerRadius * 2, 20), 
-                     Qt::AlignCenter, "Root");
+                     Qt::AlignCenter, formatSize(currentRoot->size));
     
-    // Draw rings
-    double ringWidth = (maxRadius - innerRadius) / qMax(1, maxDepth);
-    double currentRadius = innerRadius;
-    
-    for (int depth = 0; depth < maxDepth && depth < currentDepth + 1; depth++) {
-        double startAngle = 0;
-        double totalAngle = 360.0;
-        
-        if (depth == 0) {
-            // Draw root children
-            for (size_t i = 0; i < rootNode.children.size(); i++) {
-                const auto& child = rootNode.children[i];
-                double spanAngle = (child.size * totalAngle) / rootNode.size;
-                
-                // Apply animation
-                if (isAnimating) {
-                    spanAngle *= animationProgress;
-                }
-                
-                painter.setBrush(child.color);
-                painter.setPen(QPen(Qt::white, 1));
-                
-                QRectF ringRect(center.x() - currentRadius, center.y() - currentRadius,
-                               currentRadius * 2, currentRadius * 2);
-                
-                painter.drawPie(ringRect, static_cast<int>(startAngle * 16), 
-                               static_cast<int>(spanAngle * 16));
-                
-                startAngle += spanAngle;
+    // Precompute angles for current root
+    calculateNodeAngles(*currentRoot, 0.0, 360.0);
+
+    // Determine ring count from depth
+    int maxD = getMaxDepth(*currentRoot) - currentRoot->depth;
+    maxD = qBound(1, maxD, 6);
+    double ringWidth = (maxRadius - innerRadius) / maxD;
+
+    // Draw rings depth by depth
+    std::function<void(const SunburstNode&)> drawDepth = [&](const SunburstNode& node) {
+        for (const auto& ch : node.children) {
+            int depthIndex = ch.depth - currentRoot->depth; // 1..maxD
+            if (depthIndex <= 0 || depthIndex > maxD) {
+                drawDepth(ch);
+                continue;
             }
+            double rInner = innerRadius + ringWidth * (depthIndex - 1);
+            double rOuter = rInner + ringWidth;
+            QRectF rect(center.x() - rOuter, center.y() - rOuter, rOuter*2, rOuter*2);
+            painter.setBrush(ch.color);
+            painter.setPen(QPen(Qt::black, 1));
+            painter.drawPie(rect, int(ch.startAngle * 16), int(ch.spanAngle * 16));
+            drawDepth(ch);
         }
-        
-        currentRadius += ringWidth;
-    }
+    };
+    drawDepth(*currentRoot);
 }
 
 void SunburstWidget::drawLabels(QPainter& painter)
 {
-    if (rootNode.children.empty()) {
+    if (currentRoot->children.empty()) {
         return;
     }
     
     painter.setPen(Qt::white);
-    painter.setFont(QFont("Arial", 9));
+    painter.setFont(QFont("Arial", 8));
     
     // Recompute geometry similar to drawSunburst so labels sit at a good radius
     QRectF widgetRect = rect();
@@ -228,36 +258,29 @@ void SunburstWidget::drawLabels(QPainter& painter)
     double padding = 20.0;
     double maxRadius = qMin(widgetRect.width(), widgetRect.height()) / 2.0 - padding;
     double innerRadius = qMax(24.0, maxRadius * 0.18);
-    double labelRadius = innerRadius + (maxRadius - innerRadius) * 0.45; // mid ring
+    int maxD = qBound(1, getMaxDepth(*currentRoot) - currentRoot->depth, 6);
+    double ringWidth = (maxRadius - innerRadius) / maxD;
 
-    double startAngle = 0;
-    double totalAngle = 360.0;
-    
-    for (const auto& child : rootNode.children) {
-        double spanAngle = (child.size * totalAngle) / rootNode.size;
-        double midAngle = startAngle + spanAngle / 2.0;
-        
-        // Convert angle to radians
-        double radians = qDegreesToRadians(midAngle);
-        
-        // Calculate label position
-        double radius = labelRadius;
-        QPointF labelPos(center.x() + radius * qCos(radians),
-                        center.y() + radius * qSin(radians));
-        
-        // Draw label if there's enough space
-        if (spanAngle > 8.0) { // Only draw labels for larger segments to avoid overlap
-            QString label = child.name;
-            if (label.length() > 15) {
-                label = label.left(12) + "...";
+    std::function<void(const SunburstNode&)> drawText = [&](const SunburstNode& node) {
+        for (const auto& ch : node.children) {
+            int depthIndex = ch.depth - currentRoot->depth; // 1..maxD
+            if (depthIndex > 0 && depthIndex <= maxD) {
+                if (ch.spanAngle > 8.0) {
+                    double mid = ch.startAngle + ch.spanAngle/2.0;
+                    double radians = qDegreesToRadians(mid);
+                    double radius = innerRadius + ringWidth * (depthIndex-0.5);
+                    QPointF labelPos(center.x() + radius * qCos(radians),
+                                     center.y() + radius * qSin(radians));
+                    QString label = ch.name;
+                    if (label.length() > 16) label = label.left(13) + "...";
+                    painter.drawText(QRectF(labelPos.x() - 40, labelPos.y() - 10, 80, 20),
+                                     Qt::AlignCenter, label);
+                }
             }
-            
-            painter.drawText(QRectF(labelPos.x() - 30, labelPos.y() - 10, 60, 20),
-                           Qt::AlignCenter, label);
+            drawText(ch);
         }
-        
-        startAngle += spanAngle;
-    }
+    };
+    drawText(*currentRoot);
 }
 
 QColor SunburstWidget::getFileTypeColor(const QString& path) const
@@ -301,9 +324,36 @@ QString SunburstWidget::formatSize(uint64_t bytes) const
 
 SunburstWidget::SunburstNode* SunburstWidget::findNodeAt(const QPointF& point)
 {
-    // Implementation for finding node at mouse position
-    Q_UNUSED(point)
-    return nullptr;
+    // Convert point to angle and radius relative to center
+    QPointF v = point - center;
+    double r = std::hypot(v.x(), v.y());
+    double ang = std::atan2(v.y(), v.x());
+    double deg = qRadiansToDegrees(ang);
+    if (deg < 0) deg += 360.0;
+
+    double padding = 20.0;
+    double maxRadius = qMin(width(), height()) / 2.0 - padding;
+    double innerRadius = qMax(24.0, maxRadius * 0.18);
+    int maxD = qBound(1, getMaxDepth(*currentRoot) - currentRoot->depth, 6);
+    double ringWidth = (maxRadius - innerRadius) / maxD;
+    int ringIdx = int((r - innerRadius) / ringWidth) + 1; // 1..maxD
+
+    SunburstNode* result = nullptr;
+    std::function<void(SunburstNode&)> find = [&](SunburstNode& node){
+        for (auto &ch : node.children) {
+            int dIdx = ch.depth - currentRoot->depth;
+            if (dIdx == ringIdx) {
+                if (deg >= ch.startAngle && deg <= ch.startAngle + ch.spanAngle) {
+                    result = &ch;
+                    return;
+                }
+            }
+            find(ch);
+            if (result) return;
+        }
+    };
+    find(*currentRoot);
+    return result ? result : currentRoot;
 }
 
 void SunburstWidget::updateLayout()
@@ -314,10 +364,15 @@ void SunburstWidget::updateLayout()
 
 void SunburstWidget::calculateNodeAngles(SunburstNode& node, double startAngle, double spanAngle)
 {
-    // Implementation for calculating node angles
-    Q_UNUSED(node)
-    Q_UNUSED(startAngle)
-    Q_UNUSED(spanAngle)
+    node.startAngle = startAngle;
+    node.spanAngle = spanAngle;
+    double s = startAngle;
+    if (node.size == 0) return;
+    for (auto &ch : node.children) {
+        double childSpan = (double(ch.size) / double(node.size)) * spanAngle;
+        calculateNodeAngles(ch, s, childSpan);
+        s += childSpan;
+    }
 }
 
 void SunburstWidget::setNodeColor(SunburstNode& node)
@@ -335,4 +390,29 @@ void SunburstWidget::updateAnimation()
     }
     
     update();
+}
+
+void SunburstWidget::addPath(SunburstNode& root, const QStringList& parts, int idx, uint64_t size, const QString& fullPath)
+{
+    if (idx >= parts.size()) return;
+    const QString &part = parts[idx];
+
+    // Find or create child
+    for (auto &ch : root.children) {
+        if (ch.name == part) {
+            ch.size += size;
+            addPath(ch, parts, idx+1, size, fullPath);
+            return;
+        }
+    }
+    SunburstNode child;
+    child.name = part;
+    child.fullPath = fullPath;
+    child.size = size;
+    child.depth = root.depth + 1;
+    child.parent = &root;
+    setNodeColor(child);
+    root.children.push_back(child);
+    // Recurse deeper
+    addPath(root.children.back(), parts, idx+1, size, fullPath);
 }

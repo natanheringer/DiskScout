@@ -494,6 +494,7 @@ void MainWindow::updateView()
     fileSystemModel->setDirectoryData(directories, totalSize);
     if (sortProxy) sortProxy->invalidate();
     // Update visualization widgets
+    sunburstWidget->setRootPath(currentPath);
     sunburstWidget->updateData(directories, totalSize);
     treemapWidget->updateData(directories, totalSize);
 }

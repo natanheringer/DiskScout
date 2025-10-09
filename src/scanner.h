@@ -51,5 +51,10 @@ void merge_thread_results(ThreadTask *tasks, int num_threads, DirInfo *global_di
 // Dynamic array management
 int grow_directory_array(DirInfo **dirs, int *max_dirs, int current_count, pthread_mutex_t *mutex);
 
+// Expose the most recent directories buffer pointer in case a realloc moved it
+// during scanning. Callers that passed an initial buffer can query this to get
+// the final, valid pointer after the scan completes.
+DirInfo* scanner_current_dirs(void);
+
 
 #endif

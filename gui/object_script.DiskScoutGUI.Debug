@@ -1,0 +1,15 @@
+../disk_assembler.o
+debug/main.o
+debug/mainwindow.o
+debug/scanner_wrapper.o
+debug/filesystemmodel.o
+debug/sunburstwidget.o
+debug/treemapwidget.o
+debug/scanner.o
+debug/cache.o
+debug/backend_interface.o
+debug/moc_mainwindow.o
+debug/moc_filesystemmodel.o
+debug/moc_sortproxymodel.o
+debug/moc_sunburstwidget.o
+debug/moc_treemapwidget.o

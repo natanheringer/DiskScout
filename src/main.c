@@ -40,7 +40,7 @@ void format_size(uint64_t bytes, char *output) {
     } else if (bytes >= 1024) {
         sprintf(output, "%.2f KB", bytes / 1024.0);
     } else {
-        sprintf(output, "%lu B", bytes);
+        sprintf(output, "%llu B", bytes);
     }
 }
 

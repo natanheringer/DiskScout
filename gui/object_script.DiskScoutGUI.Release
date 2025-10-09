@@ -1,0 +1,15 @@
+../disk_assembler.o
+release/main.o
+release/mainwindow.o
+release/scanner_wrapper.o
+release/filesystemmodel.o
+release/sunburstwidget.o
+release/treemapwidget.o
+release/scanner.o
+release/cache.o
+release/backend_interface.o
+release/moc_mainwindow.o
+release/moc_filesystemmodel.o
+release/moc_sortproxymodel.o
+release/moc_sunburstwidget.o
+release/moc_treemapwidget.o

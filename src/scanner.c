@@ -17,6 +17,9 @@
 #endif
 #include "scanner.h"
 
+// Track the active dirs buffer in case grow_directory_array reallocates it
+static DirInfo *g_active_dirs = NULL;
+DirInfo* scanner_current_dirs(void) { return g_active_dirs; }
 // Assembly function declarations
 extern int fast_strcmp_dot(const char *str);
 extern int fast_strcmp_dotdot(const char *str);
@@ -88,8 +91,10 @@ static uint64_t scan_directory_win(
             continue;
         }
 
-        // skip via wide-char fast assembly filter (no UTF-8 conversion needed)
-        if (fast_wshould_skip(nameW)) {
+        // Skip common noisy directories (safe C check). Avoid over-filtering if ASM is too aggressive.
+        char nameUtf8[MAX_PATH_LEN];
+        WideCharToMultiByte(CP_UTF8, 0, nameW, -1, nameUtf8, MAX_PATH_LEN, NULL, NULL);
+        if (should_skip(nameUtf8)) {
             continue;
         }
 
@@ -123,6 +128,7 @@ static uint64_t scan_directory_win(
         pthread_mutex_lock(mutex);
         // Grow array if needed
         if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
+            g_active_dirs = dirs;
             strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
             dirs[*dir_count].size = total_size;
             (*dir_count)++;
@@ -144,6 +150,7 @@ uint64_t scan_directory(
     int *max_dirs
 ) {
 #ifdef _WIN32
+    g_active_dirs = dirs;
     return scan_directory_win(path, dirs, dir_count, file_count, mutex, max_dirs);
 #else
     DIR *dir;
@@ -202,6 +209,7 @@ uint64_t scan_directory(
         pthread_mutex_lock(mutex);
         // Grow array if needed
         if (grow_directory_array(&dirs, max_dirs, *dir_count, mutex) == 0) {
+            g_active_dirs = dirs;
             strncpy(dirs[*dir_count].path, path, MAX_PATH_LEN);
             dirs[*dir_count].size = total_size;
             (*dir_count)++;

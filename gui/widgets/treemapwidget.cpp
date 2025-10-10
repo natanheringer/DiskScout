@@ -27,6 +27,7 @@ TreemapWidget::TreemapWidget(QWidget *parent)
     currentRoot = &rootNode;
     currentRootPath.clear();
     legendHeight = 28;
+    colorByType = false; // start with hierarchy colors for contrast
     
     // Initialize file type colors
     fileTypeColors = {
@@ -36,7 +37,7 @@ TreemapWidget::TreemapWidget(QWidget *parent)
         QColor(0, 0, 255),     // Blue - Audio
         QColor(255, 0, 255),   // Magenta - Documents
         QColor(255, 165, 0),   // Orange - Archives
-        QColor(100, 100, 100), // Gray - Directories
+        QColor(90, 90, 100),   // Darker neutral for Directories
         QColor(200, 200, 200)  // Light Gray - Others
     };
     
@@ -128,6 +129,12 @@ void TreemapWidget::mousePressEvent(QMouseEvent* event)
         }
     }
     if (event->button() == Qt::LeftButton) {
+        // Toggle color mode if clicking toggle
+        if (modeToggleRect.contains(event->pos())) {
+            colorByType = !colorByType;
+            update();
+            return;
+        }
         TreemapNode* node = findNodeAt(event->pos());
         if (node && node != currentRoot) {
             if (!node->children.empty()) {
@@ -237,15 +244,62 @@ void TreemapWidget::drawNode(QPainter& painter, const TreemapNode& node, int dep
         drawRect = QRect(node.rect.x(), node.rect.y(), width, height);
     }
 
-    QColor color = node.color;
+    QColor color = colorByType ? getFileTypeColor(node.fullPath) : node.color;
+    if (!colorByType) {
+        // Ensure vivid hierarchy colors (fallbacks if assignColors not applied)
+        if (!node.fullPath.isEmpty()) {
+            int h = (qHash(node.fullPath) % 360);
+            color = QColor::fromHsv(h, 180, 220);
+        }
+    }
+    // Apply per-filetype brightness variants to avoid large flat blocks
+    QFileInfo fi(node.fullPath);
+    int variant = 0;
+    if (fi.isDir()) variant = 2; // directories slightly lighter by default
+    else {
+        const QString ext = fi.suffix().toLower();
+        if (ext == "exe" || ext == "dll") variant = 0;
+        else if (ext == "jpg" || ext == "png" || ext == "gif") variant = 1;
+        else if (ext == "mp4" || ext == "avi" || ext == "mkv") variant = 2;
+        else if (ext == "mp3" || ext == "wav" || ext == "flac") variant = 1;
+        else if (ext == "pdf" || ext == "doc" || ext == "txt") variant = 2;
+        else if (ext == "zip" || ext == "rar" || ext == "7z") variant = 1;
+        else variant = 0;
+    }
+    switch (variant) {
+        case 1: color = color.lighter(110); break;
+        case 2: color = color.lighter(125); break;
+        default: break;
+    }
     if (&node == hoveredNode) color = color.lighter(120);
     if (&node == selectedNode) color = color.lighter(150);
 
     QBrush brush(color);
-    brush.setStyle(getPatternForNode(node));
+    // Pattern follows the same file-type bucket only if colorByType mode is on
+    if (colorByType) {
+        int patternIndex = 0;
+        QFileInfo fi(node.fullPath);
+        if (fi.isDir()) patternIndex = 6;
+        else {
+            const QString ext = fi.suffix().toLower();
+            if (ext == "exe" || ext == "dll") patternIndex = 0;
+            else if (ext == "jpg" || ext == "png" || ext == "gif") patternIndex = 1;
+            else if (ext == "mp4" || ext == "avi" || ext == "mkv") patternIndex = 2;
+            else if (ext == "mp3" || ext == "wav" || ext == "flac") patternIndex = 3;
+            else if (ext == "pdf" || ext == "doc" || ext == "txt") patternIndex = 4;
+            else if (ext == "zip" || ext == "rar" || ext == "7z") patternIndex = 5;
+            else patternIndex = 7;
+        }
+        brush.setStyle(patternStyles[patternIndex % patternStyles.size()]);
+    } else {
+        brush.setStyle(Qt::SolidPattern);
+    }
     painter.setBrush(brush);
-    painter.setPen(QPen(QColor(20,20,20), 2)); // stronger grid lines
+    // White inner stroke for crisp separation + dark outer grid
+    painter.setPen(QPen(QColor(255,255,255,35), 2));
     painter.drawRect(drawRect);
+    painter.setPen(QPen(QColor(10,10,10), 1));
+    painter.drawRect(drawRect.adjusted(1,1,-1,-1));
 
     if (depthLimit <= 0) return;
     for (const auto& ch : node.children) {
@@ -549,7 +603,7 @@ void TreemapWidget::drawLegend(QPainter& painter)
 {
     QRect bg = QRect(10, 10, width() - 20, legendHeight - 10);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(35,35,35));
+    painter.setBrush(QColor(30,30,30));
     painter.drawRoundedRect(bg, 6, 6);
 
     QStringList labels = {"Executables","Images","Videos","Audio","Docs","Archives","Dirs","Other"};
@@ -565,6 +619,16 @@ void TreemapWidget::drawLegend(QPainter& painter)
         x += 90;
         if (x > width() - 120) break;
     }
+
+    // Mode toggle button
+    QString modeText = colorByType ? "Type colors" : "Hierarchy colors";
+    int w = 120; int h = 18;
+    modeToggleRect = QRect(width() - w - 20, bg.top()+3, w, h);
+    painter.setPen(QPen(QColor(120,120,120)));
+    painter.setBrush(QColor(50,50,50));
+    painter.drawRoundedRect(modeToggleRect, 6, 6);
+    painter.setPen(Qt::white);
+    painter.drawText(modeToggleRect, Qt::AlignCenter, modeText);
 }
 
 std::vector<QString> TreemapWidget::buildBreadcrumbPaths() const

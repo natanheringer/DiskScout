@@ -65,6 +65,8 @@ private:
     QString rootPath;
     QString currentRootPath;
     int legendHeight;
+    bool colorByType;
+    QRect modeToggleRect;
     
     // Colors for different file types
     std::vector<QColor> fileTypeColors;

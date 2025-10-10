@@ -9,7 +9,7 @@ int main(int argc, char *argv[])
     
     // Set application properties
     app.setApplicationName("DiskScout GUI");
-    app.setApplicationVersion("2.0");
+    app.setApplicationVersion("3.1.1");
     app.setOrganizationName("DiskScout");
     
     // Set dark theme

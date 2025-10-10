@@ -6,11 +6,13 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QtMath>
+#include <QToolTip>
 
 TreemapWidget::TreemapWidget(QWidget *parent)
     : QWidget(parent)
     , hoveredNode(nullptr)
     , selectedNode(nullptr)
+    , currentRoot(nullptr)
     , isDragging(false)
     , viewOffset(0, 0)
     , scale(1.0)
@@ -22,6 +24,9 @@ TreemapWidget::TreemapWidget(QWidget *parent)
 {
     setMinimumSize(400, 400);
     setMouseTracking(true);
+    currentRoot = &rootNode;
+    currentRootPath.clear();
+    legendHeight = 28;
     
     // Initialize file type colors
     fileTypeColors = {
@@ -38,6 +43,16 @@ TreemapWidget::TreemapWidget(QWidget *parent)
     // Setup animation timer
     animationTimer = new QTimer(this);
     connect(animationTimer, &QTimer::timeout, this, &TreemapWidget::updateAnimation);
+
+    // vivid palette for high contrast (WinDirStat-like)
+    vividPalette = {
+        QColor(0, 128, 255), QColor(255, 96, 0), QColor(0, 200, 120), QColor(200, 0, 200),
+        QColor(255, 60, 120), QColor(120, 200, 0), QColor(255, 200, 0), QColor(80, 160, 255)
+    };
+    patternStyles = {
+        Qt::SolidPattern, Qt::Dense3Pattern, Qt::Dense5Pattern, Qt::Dense7Pattern,
+        Qt::DiagCrossPattern, Qt::Dense4Pattern, Qt::BDiagPattern, Qt::FDiagPattern
+    };
 }
 
 TreemapWidget::~TreemapWidget()
@@ -63,8 +78,7 @@ void TreemapWidget::updateData(const std::vector<ScannerWrapper::DirectoryInfo>&
 
 void TreemapWidget::setRootPath(const QString& path)
 {
-    // Implementation for setting root path
-    Q_UNUSED(path)
+    rootPath = path;
 }
 
 void TreemapWidget::resetView()
@@ -87,6 +101,12 @@ void TreemapWidget::paintEvent(QPaintEvent* event)
     // Clear background
     painter.fillRect(rect(), QColor(25, 25, 25));
     
+    // Draw legend
+    drawLegend(painter);
+
+    // Draw breadcrumbs
+    drawBreadcrumbs(painter);
+
     // Draw treemap
     drawTreemap(painter);
     
@@ -96,11 +116,35 @@ void TreemapWidget::paintEvent(QPaintEvent* event)
 
 void TreemapWidget::mousePressEvent(QMouseEvent* event)
 {
+    // Handle breadcrumb clicks first
+    for (const auto &pair : breadcrumbHit) {
+        if (pair.second.contains(event->pos())) {
+            TreemapNode* found = findByFullPath(rootNode, pair.first);
+            currentRoot = found ? found : &rootNode;
+            currentRootPath = pair.first;
+            updateLayout();
+            update();
+            return;
+        }
+    }
     if (event->button() == Qt::LeftButton) {
         TreemapNode* node = findNodeAt(event->pos());
-        if (node) {
+        if (node && node != currentRoot) {
+            if (!node->children.empty()) {
+                currentRoot = node;
+                currentRootPath = node->fullPath;
+                updateLayout();
+                update();
+            }
             selectedNode = node;
-            // TODO: Implement drill-down functionality
+        }
+    }
+    else if (event->button() == Qt::RightButton) {
+        if (currentRoot && currentRoot->parent) {
+            currentRoot = currentRoot->parent;
+            currentRootPath = currentRoot->fullPath;
+            updateLayout();
+            update();
         }
     }
 }
@@ -112,6 +156,11 @@ void TreemapWidget::mouseMoveEvent(QMouseEvent* event)
     TreemapNode* node = findNodeAt(event->pos());
     if (node != hoveredNode) {
         hoveredNode = node;
+        if (hoveredNode) {
+            showTooltipForNode(hoveredNode, event->globalPos());
+        } else {
+            QToolTip::hideText();
+        }
         update();
     }
 }
@@ -150,23 +199,18 @@ void TreemapWidget::buildTreemapTree(const std::vector<ScannerWrapper::Directory
     rootNode.size = 0;
     rootNode.depth = 0;
     rootNode.isVisible = true;
+    rootNode.parent = nullptr;
     
-    // Calculate total size
-    for (const auto& dir : directories) {
-        rootNode.size += dir.size;
+    QString base = normalizePath(rootPath);
+    for (const auto& d : directories) {
+        rootNode.size += d.size;
+        QString p = normalizePath(d.path);
+        if (!base.isEmpty() && p.startsWith(base)) p = p.mid(base.length());
+        QStringList parts = p.split('/', Qt::SkipEmptyParts);
+        addPath(rootNode, parts, 0, d.size, normalizePath(d.path));
     }
-    
-    // Build tree structure (simplified - just add all as children)
-    for (const auto& dir : directories) {
-        TreemapNode node;
-        node.name = QFileInfo(dir.path).fileName();
-        node.fullPath = dir.path;
-        node.size = dir.size;
-        node.depth = 1;
-        node.isVisible = true;
-        setNodeColor(node);
-        rootNode.children.push_back(node);
-    }
+    fixParentPointers(rootNode);
+    assignColors();
 }
 
 void TreemapWidget::drawTreemap(QPainter& painter)
@@ -175,31 +219,37 @@ void TreemapWidget::drawTreemap(QPainter& painter)
         return;
     }
     
-    // Draw root node children
-    for (const auto& child : rootNode.children) {
-        if (!child.isVisible) continue;
-        
-        QRect drawRect = child.rect;
-        
-        // Apply animation
-        if (isAnimating) {
-            int width = static_cast<int>(child.rect.width() * animationProgress);
-            int height = static_cast<int>(child.rect.height() * animationProgress);
-            drawRect = QRect(child.rect.x(), child.rect.y(), width, height);
-        }
-        
-        // Draw rectangle
-        QColor color = child.color;
-        if (hoveredNode == &child) {
-            color = color.lighter(120); // Highlight on hover
-        }
-        if (selectedNode == &child) {
-            color = color.lighter(150); // Highlight selection
-        }
-        
-        painter.setBrush(color);
-        painter.setPen(QPen(Qt::white, 1));
-        painter.drawRect(drawRect);
+    TreemapNode* rootToDraw = currentRoot ? currentRoot : &rootNode;
+    // Draw recursively with outlines for strong separation
+    for (const auto& child : rootToDraw->children) {
+        drawNode(painter, child, 5);
+    }
+}
+
+void TreemapWidget::drawNode(QPainter& painter, const TreemapNode& node, int depthLimit)
+{
+    if (!node.isVisible) return;
+
+    QRect drawRect = node.rect;
+    if (isAnimating) {
+        int width = static_cast<int>(node.rect.width() * animationProgress);
+        int height = static_cast<int>(node.rect.height() * animationProgress);
+        drawRect = QRect(node.rect.x(), node.rect.y(), width, height);
+    }
+
+    QColor color = node.color;
+    if (&node == hoveredNode) color = color.lighter(120);
+    if (&node == selectedNode) color = color.lighter(150);
+
+    QBrush brush(color);
+    brush.setStyle(getPatternForNode(node));
+    painter.setBrush(brush);
+    painter.setPen(QPen(QColor(20,20,20), 2)); // stronger grid lines
+    painter.drawRect(drawRect);
+
+    if (depthLimit <= 0) return;
+    for (const auto& ch : node.children) {
+        drawNode(painter, ch, depthLimit - 1);
     }
 }
 
@@ -212,7 +262,8 @@ void TreemapWidget::drawLabels(QPainter& painter)
     painter.setPen(Qt::white);
     painter.setFont(QFont("Arial", 8));
     
-    for (const auto& child : rootNode.children) {
+    TreemapNode* rootToDraw = currentRoot ? currentRoot : &rootNode;
+    for (const auto& child : rootToDraw->children) {
         if (!child.isVisible) continue;
         
         QRect drawRect = child.rect;
@@ -226,12 +277,8 @@ void TreemapWidget::drawLabels(QPainter& painter)
         
         // Only draw labels if rectangle is large enough
         if (drawRect.width() > 50 && drawRect.height() > 20) {
-            QString label = child.name;
-            if (label.length() > 15) {
-                label = label.left(12) + "...";
-            }
-            
-            painter.drawText(drawRect, Qt::AlignCenter, label);
+            QString label = child.name + "  " + formatSize(child.size);
+            painter.drawText(drawRect.adjusted(4, 2, -4, -2), Qt::AlignLeft | Qt::AlignTop, label);
         }
     }
 }
@@ -277,9 +324,17 @@ QString TreemapWidget::formatSize(uint64_t bytes) const
 
 TreemapWidget::TreemapNode* TreemapWidget::findNodeAt(const QPoint& point)
 {
-    for (auto& child : rootNode.children) {
-        if (child.rect.contains(point)) {
-            return &child;
+    TreemapNode* rootToSearch = currentRoot ? currentRoot : &rootNode;
+    return findNodeAtRecursive(*rootToSearch, point);
+}
+
+TreemapWidget::TreemapNode* TreemapWidget::findNodeAtRecursive(TreemapNode& node, const QPoint& point)
+{
+    for (auto& ch : node.children) {
+        if (ch.rect.contains(point)) {
+            // Prefer deepest match
+            TreemapNode* deeper = findNodeAtRecursive(ch, point);
+            return deeper ? deeper : &ch;
         }
     }
     return nullptr;
@@ -291,11 +346,13 @@ void TreemapWidget::updateLayout()
         return;
     }
     
-    // Calculate available space
-    QRect availableRect = rect().adjusted(10, 10, -10, -10);
+    // Calculate available space (reserve legend at top)
+    QRect availableRect = rect().adjusted(10, 10 + legendHeight + 24, -10, -10);
     
-    // Apply squarified treemap algorithm
-    squarifyTreemap(rootNode, availableRect);
+    // Apply squarified treemap algorithm starting at currentRoot
+    ensureCurrentRootValid();
+    TreemapNode* rootToLayout = currentRoot ? currentRoot : &rootNode;
+    squarifyTreemap(*rootToLayout, availableRect);
     
     update();
 }
@@ -311,38 +368,61 @@ void TreemapWidget::squarifyTreemap(TreemapNode& node, const QRect& rect)
               [](const TreemapNode& a, const TreemapNode& b) {
                   return a.size > b.size;
               });
-    
-    // Simple treemap layout (not fully squarified, but functional)
-    int x = rect.x();
-    int y = rect.y();
-    int width = rect.width();
-    int height = rect.height();
-    
-    uint64_t totalSize = 0;
-    for (const auto& child : node.children) {
-        totalSize += child.size;
-    }
-    
-    int currentY = y;
-    int remainingHeight = height;
-    
-    for (size_t i = 0; i < node.children.size(); i++) {
-        auto& child = node.children[i];
-        
-        // Calculate height based on size proportion
-        int childHeight = static_cast<int>((child.size * height) / totalSize);
-        childHeight = qMax(childHeight, 20); // Minimum height
-        
-        if (i == node.children.size() - 1) {
-            // Last child takes remaining space
-            childHeight = remainingHeight;
+
+    // Compute total
+    double total = 0.0;
+    for (const auto& c : node.children) total += double(c.size);
+    if (total <= 0.0) return;
+
+    // Squarify using alternating row/column packing (simple variant)
+    QRectF free = rect;
+    bool horizontal = free.width() >= free.height();
+    int i = 0;
+    while (i < int(node.children.size())) {
+        // Build a row with items until aspect ratio would worsen
+        std::vector<int> rowIdx; rowIdx.reserve(8);
+        double rowSum = 0.0;
+
+        // Simple batching without full worst() math for now (good enough)
+        while (i < int(node.children.size())) {
+            rowIdx.push_back(i);
+            rowSum += double(node.children[i].size);
+            if (rowIdx.size() >= 6) { ++i; break; }
+            ++i;
+            if (rowSum / total >= 0.25) break; // keep rows balanced
         }
-        
-        child.rect = QRect(x, currentY, width, childHeight);
-        currentY += childHeight;
-        remainingHeight -= childHeight;
-        
-        if (remainingHeight <= 0) break;
+
+        // Lay out the row
+        double rowArea = (rowSum / total) * (rect.width() * rect.height());
+        if (horizontal) {
+            double rowHeight = qMax(1.0, rowArea / free.width());
+            double x = free.left();
+            for (int idx : rowIdx) {
+                double frac = double(node.children[idx].size) / rowSum;
+                double w = frac * free.width();
+                node.children[idx].rect = QRect(int(x), int(free.top()), int(w), int(rowHeight));
+                x += w;
+                // Recurse
+                if (!node.children[idx].children.empty()) {
+                    squarifyTreemap(node.children[idx], node.children[idx].rect.adjusted(1,1,-1,-1));
+                }
+            }
+            free.setTop(free.top() + rowHeight);
+        } else {
+            double rowWidth = qMax(1.0, rowArea / free.height());
+            double y = free.top();
+            for (int idx : rowIdx) {
+                double frac = double(node.children[idx].size) / rowSum;
+                double h = frac * free.height();
+                node.children[idx].rect = QRect(int(free.left()), int(y), int(rowWidth), int(h));
+                y += h;
+                if (!node.children[idx].children.empty()) {
+                    squarifyTreemap(node.children[idx], node.children[idx].rect.adjusted(1,1,-1,-1));
+                }
+            }
+            free.setLeft(free.left() + rowWidth);
+        }
+        horizontal = !horizontal;
     }
 }
 
@@ -368,4 +448,163 @@ void TreemapWidget::updateAnimation()
     }
     
     update();
+}
+
+QString TreemapWidget::normalizePath(const QString& p) const
+{
+    QString s = p;
+    s.replace('\\','/');
+    if (s.endsWith('/')) s.chop(1);
+    return s;
+}
+
+void TreemapWidget::addPath(TreemapNode& parent, const QStringList& parts, int index, uint64_t size, const QString& fullPath)
+{
+    if (index >= parts.size()) return;
+    const QString &part = parts[index];
+    // Find or create child
+    for (auto &ch : parent.children) {
+        if (ch.name == part) {
+            ch.size += size;
+            addPath(ch, parts, index+1, size, fullPath);
+            return;
+        }
+    }
+    TreemapNode child;
+    child.name = part;
+    child.fullPath = parent.fullPath.isEmpty() ? part : (parent.fullPath + "/" + part);
+    child.size = size;
+    child.depth = parent.depth + 1;
+    child.isVisible = true;
+    child.parent = &parent;
+    setNodeColor(child);
+    parent.children.push_back(child);
+    addPath(parent.children.back(), parts, index+1, size, fullPath);
+}
+
+void TreemapWidget::fixParentPointers(TreemapNode& node)
+{
+    for (auto &ch : node.children) {
+        ch.parent = &node;
+        fixParentPointers(ch);
+    }
+}
+
+void TreemapWidget::ensureCurrentRootValid()
+{
+    if (!currentRoot) { currentRoot = &rootNode; currentRootPath.clear(); return; }
+    if (!currentRootPath.isEmpty()) {
+        // Shallow re-find by path
+        std::function<TreemapNode*(TreemapNode&, const QString&)> findBy = [&](TreemapNode& n, const QString& path)->TreemapNode*{
+            if (n.fullPath == path) return &n;
+            for (auto &ch : n.children) { if (ch.fullPath == path) return &ch; }
+            for (auto &ch : n.children) { if (auto* r = findBy(ch, path)) return r; }
+            return nullptr;
+        };
+        TreemapNode* found = findBy(rootNode, currentRootPath);
+        if (found) currentRoot = found; else currentRoot = &rootNode;
+    }
+}
+
+void TreemapWidget::showTooltipForNode(TreemapNode* node, const QPoint& globalPos)
+{
+    if (!node) return;
+    // Calculate percent relative to current root
+    uint64_t parentSize = currentRoot ? currentRoot->size : rootNode.size;
+    double pct = parentSize ? (double(node->size) * 100.0 / double(parentSize)) : 0.0;
+    QString text = QString("%1\n%2  (%3%1)")
+        .arg("") // placeholder to keep translator-friendly structure
+        .arg(formatSize(node->size))
+        .arg(QString::number(pct, 'f', 1));
+    text = (node->fullPath.isEmpty() ? rootPath : node->fullPath) + "\n" + formatSize(node->size) + QString("  (%1%)").arg(QString::number(pct, 'f', 1));
+    QToolTip::showText(globalPos, text, this);
+}
+
+void TreemapWidget::assignColors()
+{
+    // Assign vivid base colors for first level; lighten for deeper levels
+    TreemapNode* base = &rootNode;
+    for (size_t i = 0; i < base->children.size(); ++i) {
+        QColor baseColor = vividPalette[i % vividPalette.size()];
+        base->children[i].color = baseColor;
+        std::function<void(TreemapNode&, int)> tint = [&](TreemapNode& n, int depth){
+            for (auto &ch : n.children) {
+                int factor = 100 + depth * 12;
+                ch.color = baseColor.lighter(factor);
+                tint(ch, depth + 1);
+            }
+        };
+        tint(base->children[i], 1);
+    }
+}
+
+Qt::BrushStyle TreemapWidget::getPatternForNode(const TreemapNode& node) const
+{
+    uint32_t h = qHash(node.fullPath);
+    if (patternStyles.empty()) return Qt::SolidPattern;
+    return patternStyles[h % patternStyles.size()];
+}
+
+void TreemapWidget::drawLegend(QPainter& painter)
+{
+    QRect bg = QRect(10, 10, width() - 20, legendHeight - 10);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(35,35,35));
+    painter.drawRoundedRect(bg, 6, 6);
+
+    QStringList labels = {"Executables","Images","Videos","Audio","Docs","Archives","Dirs","Other"};
+    int x = 18;
+    for (int i = 0; i < (int)fileTypeColors.size() && i < labels.size(); ++i) {
+        painter.setPen(QPen(Qt::black, 1));
+        painter.setBrush(fileTypeColors[i]);
+        QRect swatch(x, bg.top()+4, 12, 12);
+        painter.drawRect(swatch);
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Arial", 8));
+        painter.drawText(x + 16, bg.top()+14, labels[i]);
+        x += 90;
+        if (x > width() - 120) break;
+    }
+}
+
+std::vector<QString> TreemapWidget::buildBreadcrumbPaths() const
+{
+    std::vector<QString> crumbs;
+    const TreemapNode* n = currentRoot ? currentRoot : &rootNode;
+    while (n) {
+        crumbs.push_back(n->fullPath.isEmpty() ? rootPath : n->fullPath);
+        n = n->parent;
+    }
+    std::reverse(crumbs.begin(), crumbs.end());
+    return crumbs;
+}
+
+TreemapWidget::TreemapNode* TreemapWidget::findByFullPath(TreemapNode& node, const QString& path)
+{
+    if ((node.fullPath.isEmpty() ? rootPath : node.fullPath) == path) return &node;
+    for (auto &ch : node.children) {
+        if ((ch.fullPath.isEmpty() ? rootPath : ch.fullPath) == path) return &ch;
+        if (auto* r = findByFullPath(ch, path)) return r;
+    }
+    return nullptr;
+}
+
+void TreemapWidget::drawBreadcrumbs(QPainter& painter)
+{
+    breadcrumbHit.clear();
+    auto crumbs = buildBreadcrumbPaths();
+    int y = 10 + legendHeight; int x = 14;
+    painter.setFont(QFont("Arial", 9, QFont::Bold));
+    painter.setPen(QPen(Qt::white));
+    for (size_t i = 0; i < crumbs.size(); ++i) {
+        QString label = (i == 0) ? QString("Root") : QFileInfo(crumbs[i]).fileName();
+        QRectF r(x, y, painter.fontMetrics().horizontalAdvance(label) + 16, 18);
+        painter.setBrush(QColor(55,55,55)); painter.setPen(QPen(QColor(120,120,120)));
+        painter.drawRoundedRect(r, 6, 6);
+        painter.setPen(Qt::white);
+        painter.drawText(r.adjusted(8,0,-6,0), Qt::AlignVCenter|Qt::AlignLeft, label);
+        breadcrumbHit.push_back({crumbs[i], r});
+        x += int(r.width()) + 8;
+        if (x > width() - 120) break;
+    }
 }

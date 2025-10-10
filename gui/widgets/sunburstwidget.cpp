@@ -258,17 +258,8 @@ void SunburstWidget::drawSunburst(QPainter& painter)
     double padding = 20.0;
     double maxRadius = qMin(chartRect.width(), chartRect.height()) / 2.0 - padding;
     
-    // Draw center circle
-    painter.setBrush(QColor(53, 53, 53));
-    painter.setPen(QPen(Qt::white, 1));
+    // Compute inner hub radius now; draw hub after wedges to ensure visibility
     double innerRadius = qMax(24.0, maxRadius * 0.18); // keep inner hub proportional
-    painter.drawEllipse(center, innerRadius, innerRadius);
-    
-    // Draw center text
-    painter.setPen(Qt::white);
-    painter.setFont(QFont("Arial", 10, QFont::Bold));
-    painter.drawText(QRectF(center.x() - innerRadius, center.y() - 10, innerRadius * 2, 20), 
-                     Qt::AlignCenter, formatSize(currentRoot->size));
     
     // Precompute angles for current root
     calculateNodeAngles(*currentRoot, 0.0, 360.0);
@@ -280,7 +271,14 @@ void SunburstWidget::drawSunburst(QPainter& painter)
 
     // Draw rings depth by depth
     std::function<void(const SunburstNode&)> drawDepth = [&](const SunburstNode& node) {
-        for (const auto& ch : node.children) {
+        // Sort children by size (descending) to give larger slices drawing priority and clearer label placement
+        std::vector<const SunburstNode*> ordered;
+        ordered.reserve(node.children.size());
+        for (const auto &c : node.children) ordered.push_back(&c);
+        std::sort(ordered.begin(), ordered.end(), [](const SunburstNode* a, const SunburstNode* b){ return a->size > b->size; });
+
+        for (const SunburstNode* chp : ordered) {
+            const SunburstNode &ch = *chp;
             int depthIndex = ch.depth - currentRoot->depth; // 1..maxD
             if (depthIndex > 0 && depthIndex <= maxD) {
                 double rInner = innerRadius + ringWidth * (depthIndex - 1);
@@ -291,11 +289,19 @@ void SunburstWidget::drawSunburst(QPainter& painter)
                 if (ch.spanAngle > 0.0)
                     painter.drawPie(rect, int(ch.startAngle * 16), int(ch.spanAngle * 16));
             }
-            // Always descend to render deeper levels too
             if (!ch.children.empty()) drawDepth(ch);
         }
     };
     drawDepth(*currentRoot);
+
+    // Draw center circle and text on top
+    painter.setBrush(QColor(53, 53, 53));
+    painter.setPen(QPen(Qt::white, 1));
+    painter.drawEllipse(center, innerRadius, innerRadius);
+    painter.setPen(Qt::white);
+    painter.setFont(QFont("Arial", 10, QFont::Bold));
+    painter.drawText(QRectF(center.x() - innerRadius, center.y() - 10, innerRadius * 2, 20),
+                     Qt::AlignCenter, formatSize(currentRoot->size));
 }
 
 std::vector<QString> SunburstWidget::buildBreadcrumbPaths() const
@@ -401,19 +407,26 @@ void SunburstWidget::drawLabels(QPainter& painter)
     double ringWidth = (maxRadius - innerRadius) / maxD;
 
     std::function<void(const SunburstNode&)> drawText = [&](const SunburstNode& node) {
-        for (const auto& ch : node.children) {
+        // Larger slices first for clearer label placement
+        std::vector<const SunburstNode*> ordered;
+        ordered.reserve(node.children.size());
+        for (const auto &c : node.children) ordered.push_back(&c);
+        std::sort(ordered.begin(), ordered.end(), [](const SunburstNode* a, const SunburstNode* b){ return a->size > b->size; });
+
+        for (const SunburstNode* chp : ordered) {
+            const SunburstNode &ch = *chp;
             int depthIndex = ch.depth - currentRoot->depth; // 1..maxD
             if (depthIndex > 0 && depthIndex <= maxD) {
                 if (ch.spanAngle > 8.0) {
                     double mid = ch.startAngle + ch.spanAngle/2.0;
                     double radians = qDegreesToRadians(mid);
-                    double radius = innerRadius + ringWidth * (depthIndex-0.5);
+                    double radius = innerRadius + ringWidth * (depthIndex-0.45);
                     QPointF labelPos(center.x() + radius * qCos(radians),
                                      center.y() + radius * qSin(radians));
                     QString label = ch.name;
-                    if (label.length() > 16) label = label.left(13) + "...";
-                    painter.drawText(QRectF(labelPos.x() - 40, labelPos.y() - 10, 80, 20),
-                                     Qt::AlignCenter, label);
+                    if (label.length() > 18) label = label.left(15) + "...";
+                    QRectF box(labelPos.x() - 60, labelPos.y() - 10, 120, 20);
+                    painter.drawText(box, Qt::AlignCenter, label);
                 }
             }
             drawText(ch);

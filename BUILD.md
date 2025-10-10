@@ -1,6 +1,6 @@
 ## DiskScout — Windows 11 Build Guide (Personal Recommendation)
 
-This is a concise, reliable checklist to set up the toolchain, build DiskScout (CLI and GUI), and run it on Windows 11 using MSYS2 MinGW64. It mirrors the exact commands you used in your screenshots.
+This is a concise, reliable checklist to set up the toolchain, build DiskScout (CLI and GUI), and run it on Windows 11 using MSYS2 MinGW64. 
 
 ---
 

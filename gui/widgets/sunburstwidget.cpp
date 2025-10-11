@@ -6,6 +6,8 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QtMath>
+#include <QStorageInfo>
+#include <QDir>
 #include <functional>
 
 SunburstWidget::SunburstWidget(QWidget *parent)
@@ -300,8 +302,17 @@ void SunburstWidget::drawSunburst(QPainter& painter)
     painter.drawEllipse(center, innerRadius, innerRadius);
     painter.setPen(Qt::white);
     painter.setFont(QFont("Arial", 10, QFont::Bold));
+    // Always show PHYSICAL usage (for the volume containing rootPath)
+    QString centerText;
+    QStorageInfo si(rootPath.isEmpty() ? QDir::rootPath() : rootPath);
+    if (si.isValid() && si.isReady() && si.bytesTotal() > 0) {
+        quint64 physicalUsed = si.bytesTotal() - si.bytesFree();
+        centerText = formatSize(physicalUsed);
+    } else {
+        centerText = formatSize(currentRoot->size); // fallback
+    }
     painter.drawText(QRectF(center.x() - innerRadius, center.y() - 10, innerRadius * 2, 20),
-                     Qt::AlignCenter, formatSize(currentRoot->size));
+                     Qt::AlignCenter, centerText);
 }
 
 std::vector<QString> SunburstWidget::buildBreadcrumbPaths() const
@@ -371,7 +382,7 @@ void SunburstWidget::drawHeaderInfo(QPainter& painter)
     QString sizeStr = formatSize(currentRoot->size);
     int dirCount = computeDirCount(*currentRoot) - 1;
 
-    QString info = QString("%1    •    %2    •    %3 dirs")
+    QString info = QString("%1    •    Logical size: %2    •    %3 dirs")
                     .arg(fm.elidedText(path, Qt::ElideMiddle, width() - 260))
                     .arg(sizeStr)
                     .arg(dirCount);

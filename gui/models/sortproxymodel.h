@@ -27,17 +27,17 @@ protected:
             return QSortFilterProxyModel::lessThan(source_left, source_right);
         }
         const int col = source_left.column();
-        if (col == 1) { // Size
+        if (col == 3) { // Size (shifted by 2 due to bar + % column)
             const QVariant av = sourceModel()->data(source_left, FileRoles::SizeRole);
             const QVariant bv = sourceModel()->data(source_right, FileRoles::SizeRole);
             const quint64 a = av.isValid() ? av.toULongLong() : 0ULL;
             const quint64 b = bv.isValid() ? bv.toULongLong() : 0ULL;
             return a < b;
-        } else if (col == 2) { // Contents
+        } else if (col == 4) { // Contents
             const int a = sourceModel()->data(source_left, FileRoles::ContentsRole).toInt();
             const int b = sourceModel()->data(source_right, FileRoles::ContentsRole).toInt();
             return a < b;
-        } else if (col == 3) { // Modified
+        } else if (col == 5) { // Modified
             const QVariant av = sourceModel()->data(source_left, FileRoles::ModifiedRole);
             const QVariant bv = sourceModel()->data(source_right, FileRoles::ModifiedRole);
             const QDateTime a = av.isValid() ? av.toDateTime() : QDateTime();

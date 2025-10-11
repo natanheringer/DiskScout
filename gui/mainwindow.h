@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QSplitter>
 #include <QTreeView>
+#include <QStyledItemDelegate>
 #include <QStackedWidget>
 #include <QToolBar>
 #include <QStatusBar>
@@ -24,6 +25,9 @@
 #include <QCloseEvent>
 #include <QStorageInfo>
 #include <QPointer>
+#include <QDialog>
+#include <QTextBrowser>
+#include <QDialogButtonBox>
 
 #include "scanner_wrapper.h"
 #include "models/filesystemmodel.h"
@@ -54,6 +58,7 @@ private slots:
     void onOpenInExplorer();
     void onDeleteFile();
     void onShowProperties();
+    void onShowHelpGuide();
 
 private:
     void setupUI();
@@ -65,6 +70,7 @@ private:
     void showContextMenu(const QPoint& pos);
     QString formatSize(uint64_t bytes);
     void closeEvent(QCloseEvent* event) override;
+    void applyLanguage();
     
     // UI Components
     QWidget* centralWidget;
@@ -110,6 +116,21 @@ private:
     QAction* openExplorerAction;
     QAction* deleteAction;
     QAction* propertiesAction;
+    QAction* howToUseAction;
+    // Language menu
+    enum AppLanguage { LangEnglish = 0, LangPortuguese = 1, LangSpanish = 2 };
+    AppLanguage appLanguage = LangEnglish;
+    QAction* langEnglishAction;
+    QAction* langPortugueseAction;
+    QAction* langSpanishAction;
+};
+
+// Delegate to draw the percent bar in the first column
+class PercentageBarDelegate : public QStyledItemDelegate {
+    Q_OBJECT
+public:
+    explicit PercentageBarDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
 };
 
 // Thread for scanning (non-blocking UI)

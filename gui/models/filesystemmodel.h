@@ -19,6 +19,9 @@ public:
     explicit FileSystemModel(QObject *parent = nullptr);
     ~FileSystemModel();
 
+    // Role exposed for delegates to fetch percent value
+    static constexpr int BarPercentRole = Qt::UserRole + 101; // int 0..100
+
     // QAbstractItemModel interface
     QModelIndex index(int row, int column, const QModelIndex &parent = QModelIndex()) const override;
     QModelIndex parent(const QModelIndex &child) const override;
@@ -36,6 +39,7 @@ public:
     QColor getColor(const QModelIndex& index) const;
 
 private:
+
     struct TreeNode {
         ScannerWrapper::DirectoryInfo info;
         std::vector<TreeNode*> children;

@@ -52,7 +52,7 @@ int FileSystemModel::rowCount(const QModelIndex &parent) const
 int FileSystemModel::columnCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    return 4; // Name, Size, Contents, Modified
+    return 6; // Bar, %, Name, Size, Contents, Modified
 }
 
 QVariant FileSystemModel::data(const QModelIndex &index, int role) const
@@ -67,13 +67,22 @@ QVariant FileSystemModel::data(const QModelIndex &index, int role) const
     switch (role) {
     case Qt::DisplayRole:
         switch (index.column()) {
-        case 0: // Name
+        case 0: // Subtree Percentage bar (no text)
+            return QVariant();
+        case 1: { // Numeric percent
+            if (totalSize > 0) {
+                double pct = (double(node->info.size) * 100.0) / double(totalSize);
+                return QString::number(pct, 'f', 1) + "%";
+            }
+            return QString("0.0%");
+        }
+        case 2: // Name
             return QFileInfo(node->info.path).fileName();
-        case 1: // Size
+        case 3: // Size
             return formatSize(node->info.size);
-        case 2: // Contents
+        case 4: // Contents
             return QString("%1 items").arg(node->info.dirCount);
-        case 3: // Modified
+        case 5: // Modified
             return QFileInfo(node->info.path).lastModified().toString("yyyy-MM-dd hh:mm");
         }
         break;
@@ -85,19 +94,26 @@ QVariant FileSystemModel::data(const QModelIndex &index, int role) const
         return node->info.dirCount;
         
     case Qt::DecorationRole:
-        if (index.column() == 0) {
+        if (index.column() == 2) {
             return getFileIcon(node->info.path);
         }
         break;
         
     case Qt::BackgroundRole:
-        if (index.column() == 1) { // Size column
+        if (index.column() == 3) { // Size column
             return getColor(index);
         }
         break;
         
     case Qt::UserRole:
         return node->info.path;
+
+    case BarPercentRole:
+        if (totalSize > 0) {
+            int pct = int((double(node->info.size) * 100.0) / double(totalSize));
+            return qBound(0, pct, 100);
+        }
+        return 0;
         
     case Qt::ToolTipRole:
         return QString("Path: %1\nSize: %2\nType: %3")
@@ -113,10 +129,12 @@ QVariant FileSystemModel::headerData(int section, Qt::Orientation orientation, i
 {
     if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
         switch (section) {
-        case 0: return "Name";
-        case 1: return "Size";
-        case 2: return "Contents";
-        case 3: return "Modified";
+        case 0: return "Subtree Percentage"; // bar header
+        case 1: return "%";
+        case 2: return "Name";
+        case 3: return "Size";
+        case 4: return "Contents";
+        case 5: return "Modified";
         }
     }
     return QVariant();

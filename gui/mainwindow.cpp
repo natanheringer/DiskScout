@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QPainter>
 #include <QStandardPaths>
 #include <QSettings>
 #include <QDebug>
@@ -84,12 +85,20 @@ void MainWindow::setupUI()
     sortProxy = new SortProxyModel(this);
     sortProxy->setSourceModel(fileSystemModel);
     treeView->setModel(sortProxy);
+    treeView->setItemDelegateForColumn(0, new PercentageBarDelegate(treeView));
     treeView->setSortingEnabled(true);
     treeView->sortByColumn(1, Qt::DescendingOrder); // default: size desc
     treeView->setHeaderHidden(false);
+    treeView->header()->setSectionResizeMode(0, QHeaderView::Fixed);
+    treeView->header()->resizeSection(0, 180); // bar width similar to QDirStat
+    treeView->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    treeView->header()->resizeSection(1, 60); // numeric percent
+    treeView->header()->setSectionResizeMode(2, QHeaderView::Stretch);
     treeView->setAlternatingRowColors(true);
     treeView->setSelectionMode(QAbstractItemView::SingleSelection);
     treeView->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Slightly taller rows to improve bar readability
+    treeView->setStyleSheet("QTreeView::item{ height: 26px; }");
     
     // Create right panel with stacked widget
     rightPanel = new QStackedWidget(this);
@@ -158,9 +167,24 @@ void MainWindow::setupMenuBar()
         QMessageBox::information(this, "Cache Cleared", "Cache has been cleared for the current path.");
     });
     
+    // Language menu
+    QMenu* langMenu = menuBar()->addMenu("&Language");
+    langEnglishAction = langMenu->addAction("English");
+    langPortugueseAction = langMenu->addAction("Português");
+    langSpanishAction = langMenu->addAction("Español");
+    langEnglishAction->setCheckable(true);
+    langPortugueseAction->setCheckable(true);
+    langSpanishAction->setCheckable(true);
+    langEnglishAction->setChecked(true);
+    connect(langEnglishAction, &QAction::triggered, [this]{ appLanguage = LangEnglish; applyLanguage(); });
+    connect(langPortugueseAction, &QAction::triggered, [this]{ appLanguage = LangPortuguese; applyLanguage(); });
+    connect(langSpanishAction, &QAction::triggered, [this]{ appLanguage = LangSpanish; applyLanguage(); });
+
     // Help menu
     QMenu* helpMenu = menuBar()->addMenu("&Help");
+    howToUseAction = helpMenu->addAction("How to &Use");
     QAction* aboutAction = helpMenu->addAction("&About");
+    connect(howToUseAction, &QAction::triggered, this, &MainWindow::onShowHelpGuide);
     connect(aboutAction, &QAction::triggered, [this]() {
         QMessageBox::about(this, "About DiskScout GUI", 
             "DiskScout GUI v2.0\n\n"
@@ -508,6 +532,55 @@ void MainWindow::onShowProperties()
     }
 }
 
+void MainWindow::onShowHelpGuide()
+{
+    // Build a small help dialog with rich text
+    QDialog dlg(this);
+    dlg.setWindowTitle("How to Use DiskScout");
+    dlg.resize(700, 520);
+    QVBoxLayout *layout = new QVBoxLayout(&dlg);
+    QTextBrowser *doc = new QTextBrowser(&dlg);
+    doc->setOpenExternalLinks(true);
+    doc->setStyleSheet("QTextBrowser{background:#1e1e1e;color:#ddd;border:1px solid #444;padding:8px;}");
+
+    QString html;
+    html += "<h2>Getting Started</h2>";
+    html += "<ol>"
+            "<li><b>Select a path</b> from the Path box or click Browse.</li>"
+            "<li>Click <b>Scan</b>. The left panel fills with folders sorted by size.</li>"
+            "<li>Switch views with the toolbar (Sunburst / Treemap).</li>"
+            "</ol>";
+    html += "<h3>Left Panel</h3>";
+    html += "<ul>"
+            "<li><b>Subtree Percentage</b> bar shows share of total usage.</li>"
+            "<li>Click a row to focus that folder in the visualizations.</li>"
+            "<li>Right-click for actions: Open in Explorer, Delete, Properties.</li>"
+            "</ul>";
+    html += "<h3>Sunburst (Baobab) View</h3>";
+    html += "<ul>"
+            "<li>Center shows <b>Physical size</b> of the drive.</li>"
+            "<li>Top bar shows <b>Logical size</b> of the current folder.</li>"
+            "<li><b>Left click</b> a slice to zoom in, <b>Right click</b> to go up, use breadcrumbs to jump.</li>"
+            "</ul>";
+    html += "<h3>Treemap View</h3>";
+    html += "<ul>"
+            "<li>Toggle color mode on the legend: <b>Type colors</b> or <b>Hierarchy colors</b>.</li>"
+            "<li>Hover for path/size/percent. <b>Left click</b> to drill in, <b>Right click</b> for Open/Copy/Zoom menu.</li>"
+            "</ul>";
+    html += "<h3>Tips</h3>";
+    html += "<ul>"
+            "<li>Use the Refresh button to rescan after changes.</li>"
+            "<li>Cache speeds up repeat scans of the same path.</li>"
+            "</ul>";
+
+    doc->setHtml(html);
+    layout->addWidget(doc);
+    QDialogButtonBox *btns = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(btns);
+    dlg.exec();
+}
+
 void MainWindow::updateView()
 {
     // Update tree view model
@@ -517,6 +590,33 @@ void MainWindow::updateView()
     sunburstWidget->setRootPath(currentPath);
     sunburstWidget->updateData(directories, totalSize);
     treemapWidget->updateData(directories, totalSize);
+}
+
+void MainWindow::applyLanguage()
+{
+    // Very lightweight runtime text switching (no .qm yet)
+    // Toolbar button titles and menu captions
+    if (appLanguage == LangPortuguese) {
+        viewModeButton->setText(rightPanel->currentWidget() == sunburstWidget ? "Rosácea" : "Mapa de Árvores");
+        scanButton->setText("Escanear");
+        refreshButton->setText("Atualizar");
+        topToolBar->setWindowTitle("Barra Principal");
+        langEnglishAction->setChecked(false); langPortugueseAction->setChecked(true); langSpanishAction->setChecked(false);
+    } else if (appLanguage == LangSpanish) {
+        viewModeButton->setText(rightPanel->currentWidget() == sunburstWidget ? "Roseta" : "Mapa de Árboles");
+        scanButton->setText("Escanear");
+        refreshButton->setText("Actualizar");
+        topToolBar->setWindowTitle("Barra Principal");
+        langEnglishAction->setChecked(false); langPortugueseAction->setChecked(false); langSpanishAction->setChecked(true);
+    } else {
+        viewModeButton->setText(rightPanel->currentWidget() == sunburstWidget ? "Sunburst" : "Treemap");
+        scanButton->setText("Scan");
+        refreshButton->setText("Refresh");
+        topToolBar->setWindowTitle("Main Toolbar");
+        langEnglishAction->setChecked(true); langPortugueseAction->setChecked(false); langSpanishAction->setChecked(false);
+    }
+
+    // Menu labels: we keep menu object names but could rebuild strings similarly
 }
 
 void MainWindow::showContextMenu(const QPoint& pos)
@@ -537,6 +637,40 @@ void MainWindow::showContextMenu(const QPoint& pos)
     connect(propertiesAction, &QAction::triggered, this, &MainWindow::onShowProperties);
     
     contextMenu.exec(treeView->mapToGlobal(pos));
+}
+
+// PercentageBarDelegate implementation
+void PercentageBarDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const
+{
+    QStyleOptionViewItem opt(option);
+    initStyleOption(&opt, index);
+    // Draw background
+    painter->save();
+    painter->fillRect(opt.rect, opt.state & QStyle::State_Selected ? QColor(60,90,140,80) : QColor(30,30,30));
+    // Fetch percent from model (0..100)
+    int pct = index.model()->data(index, FileSystemModel::BarPercentRole).toInt();
+    pct = qBound(0, pct, 100);
+    // Bar rect
+    // Make bar taller: reduce vertical padding
+    QRect r = opt.rect.adjusted(6, 4, -6, -4);
+    int w = int(r.width() * (pct / 100.0));
+    QRect filled(r.left(), r.top(), w, r.height());
+    painter->setPen(QPen(QColor(70,70,70)));
+    painter->setBrush(QColor(80,160,255,180));
+    painter->drawRect(filled);
+    painter->setPen(QPen(QColor(90,90,90)));
+    painter->setBrush(Qt::NoBrush);
+    painter->drawRect(r);
+    // Percent text
+    // Percent text with subtle shadow for readability
+    QFont f = painter->font();
+    f.setBold(true);
+    painter->setFont(f);
+    painter->setPen(QColor(0,0,0,180));
+    painter->drawText(r.translated(1,1), Qt::AlignCenter, QString::number(pct) + "%");
+    painter->setPen(Qt::white);
+    painter->drawText(r, Qt::AlignCenter, QString::number(pct) + "%");
+    painter->restore();
 }
 
 QString MainWindow::formatSize(uint64_t bytes)

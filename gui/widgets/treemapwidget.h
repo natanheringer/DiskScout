@@ -82,6 +82,8 @@ private:
     void drawLegend(QPainter& painter);
     void drawBreadcrumbs(QPainter& painter);
     QColor getFileTypeColor(const QString& path) const;
+    QColor getNodeColor(const TreemapNode& node) const; // current mode color
+    QColor getContrastingTextColor(const QColor& bg) const; // dark on bright, light on dark
     QString formatSize(uint64_t bytes) const;
     TreemapNode* findNodeAt(const QPoint& point);
     TreemapNode* findNodeAtRecursive(TreemapNode& node, const QPoint& point);

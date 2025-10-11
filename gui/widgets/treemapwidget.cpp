@@ -7,6 +7,11 @@
 #include <QFileInfo>
 #include <QtMath>
 #include <QToolTip>
+#include <QMenu>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QClipboard>
+#include <QApplication>
 
 TreemapWidget::TreemapWidget(QWidget *parent)
     : QWidget(parent)
@@ -28,6 +33,12 @@ TreemapWidget::TreemapWidget(QWidget *parent)
     currentRootPath.clear();
     legendHeight = 28;
     colorByType = false; // start with hierarchy colors for contrast
+    // Ensure tooltip is white with black text (high contrast)
+    setStyleSheet("QToolTip { color: #000000; background-color: #ffffff; border: 1px solid #888888; }");
+    QPalette tipPal = QToolTip::palette();
+    tipPal.setColor(QPalette::ToolTipBase, QColor(255,255,255));
+    tipPal.setColor(QPalette::ToolTipText, QColor(0,0,0));
+    QToolTip::setPalette(tipPal);
     
     // Initialize file type colors
     fileTypeColors = {
@@ -144,6 +155,37 @@ void TreemapWidget::mousePressEvent(QMouseEvent* event)
                 update();
             }
             selectedNode = node;
+        }
+    } else if (event->button() == Qt::RightButton) {
+        TreemapNode* node = findNodeAt(event->pos());
+        if (node) {
+            selectedNode = node;
+            QMenu menu(this);
+            QString full = node->fullPath.isEmpty() ? rootPath : node->fullPath;
+            QAction *openAct = menu.addAction("Open folder");
+            QAction *copyAct = menu.addAction("Copy path");
+            QAction *zoomInAct = nullptr;
+            QAction *zoomOutAct = nullptr;
+            if (!node->children.empty()) zoomInAct = menu.addAction("Zoom into");
+            if (currentRoot && currentRoot->parent) zoomOutAct = menu.addAction("Zoom out");
+            QAction *chosen = menu.exec(event->globalPos());
+            if (chosen == openAct) {
+                QDesktopServices::openUrl(QUrl::fromLocalFile(full));
+            } else if (chosen == copyAct) {
+                QApplication::clipboard()->setText(full);
+            } else if (chosen == zoomInAct) {
+                currentRoot = node;
+                currentRootPath = node->fullPath;
+                updateLayout();
+                update();
+            } else if (chosen == zoomOutAct) {
+                if (currentRoot && currentRoot->parent) {
+                    currentRoot = currentRoot->parent;
+                    currentRootPath = currentRoot->fullPath;
+                    updateLayout();
+                    update();
+                }
+            }
         }
     }
     else if (event->button() == Qt::RightButton) {
@@ -313,8 +355,7 @@ void TreemapWidget::drawLabels(QPainter& painter)
         return;
     }
     
-    painter.setPen(Qt::white);
-    painter.setFont(QFont("Arial", 8));
+    painter.setFont(QFont("Arial", 8, QFont::Bold));
     
     TreemapNode* rootToDraw = currentRoot ? currentRoot : &rootNode;
     for (const auto& child : rootToDraw->children) {
@@ -332,6 +373,15 @@ void TreemapWidget::drawLabels(QPainter& painter)
         // Only draw labels if rectangle is large enough
         if (drawRect.width() > 50 && drawRect.height() > 20) {
             QString label = child.name + "  " + formatSize(child.size);
+            QColor bg = getNodeColor(child);
+            QColor textColor = getContrastingTextColor(bg);
+            QColor shadow = (textColor.lightness() < 128) ? QColor(255,255,255,190) : QColor(0,0,0,190);
+            painter.setBrush(Qt::NoBrush);
+            // Shadow for readability
+            painter.setPen(shadow);
+            painter.drawText(drawRect.adjusted(5, 3, -3, -1), Qt::AlignLeft | Qt::AlignTop, label);
+            // Main text
+            painter.setPen(textColor);
             painter.drawText(drawRect.adjusted(4, 2, -4, -2), Qt::AlignLeft | Qt::AlignTop, label);
         }
     }
@@ -374,6 +424,34 @@ QString TreemapWidget::formatSize(uint64_t bytes) const
     } else {
         return QString("%1 B").arg(bytes);
     }
+}
+
+QColor TreemapWidget::getNodeColor(const TreemapNode& node) const
+{
+    QColor color = colorByType ? getFileTypeColor(node.fullPath) : node.color;
+    if (!colorByType) {
+        if (!node.fullPath.isEmpty()) {
+            int h = (qHash(node.fullPath) % 360);
+            color = QColor::fromHsv(h, 180, 220);
+        }
+    }
+    // Apply same brightness variants as paint path for consistency
+    QFileInfo fi(node.fullPath);
+    int variant = 0;
+    if (fi.isDir()) variant = 2; else {
+        const QString ext = fi.suffix().toLower();
+        if (ext == "jpg" || ext == "png" || ext == "gif" || ext == "zip" || ext == "rar" || ext == "7z") variant = 1;
+        else if (ext == "mp4" || ext == "avi" || ext == "mkv" || ext == "pdf" || ext == "doc" || ext == "txt") variant = 2;
+    }
+    switch (variant) { case 1: color = color.lighter(110); break; case 2: color = color.lighter(125); break; default: break; }
+    return color;
+}
+
+QColor TreemapWidget::getContrastingTextColor(const QColor& bg) const
+{
+    // Compute luminance; threshold ~150 for bold backgrounds
+    double L = 0.2126*bg.red() + 0.7152*bg.green() + 0.0722*bg.blue();
+    return (L > 140.0) ? QColor(20,20,20) : QColor(245,245,245);
 }
 
 TreemapWidget::TreemapNode* TreemapWidget::findNodeAt(const QPoint& point)
